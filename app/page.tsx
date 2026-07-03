@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { checkSkuInBsale, createBsaleProduct, submitStockReception, getBsaleOffices } from './actions';
+import { checkSkuInBsale, createBsaleProduct, submitStockReception, getBsaleOffices } from './reception/actions';
 
 interface UiItem {
     sku: string;
