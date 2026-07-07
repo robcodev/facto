@@ -43,7 +43,6 @@ export default function RecepcionPage() {
         setItems([]);
 
         const formData = new FormData();
-        // Metemos todos los archivos seleccionados bajo la misma llave 'files'
         Array.from(fileList).forEach((file) => {
             formData.append('files', file);
         });
@@ -56,9 +55,8 @@ export default function RecepcionPage() {
 
             if (!response.ok) throw new Error('Error al procesar la factura con IA');
 
-            const data = await response.json(); // { documentNumber: "...", invoiceItems: [...] }
+            const data = await response.json();
 
-            // Si la IA logró extraer un número de factura, lo autocompletamos
             if (data.documentNumber) {
                 setDocumentNumber(data.documentNumber.replace(/\D/g, ''));
             }
@@ -98,6 +96,34 @@ export default function RecepcionPage() {
         }
     };
 
+    const handleSkuChange = async (index: number, newSku: string) => {
+        setItems(prev => {
+            const updated = [...prev];
+            updated[index].sku = newSku;
+            updated[index].exists = null;
+            updated[index].bsaleName = 'Validando corrección...';
+            return updated;
+        });
+
+        const validation = await checkSkuInBsale(newSku);
+
+        setItems(prev => {
+            const updated = [...prev];
+            if (updated[index].sku === newSku) {
+                if (validation.exists) {
+                    updated[index].exists = true;
+                    updated[index].variantId = validation.variantId ?? null;
+                    updated[index].bsaleName = validation.name ?? 'Encontrado';
+                } else {
+                    updated[index].exists = false;
+                    updated[index].variantId = null;
+                    updated[index].bsaleName = 'Producto No Existe';
+                }
+            }
+            return updated;
+        });
+    };
+
     const handleCreateProduct = async (index: number) => {
         const item = items[index];
         const nameInput = prompt(`Ingresa el nombre para el SKU: ${item.sku}`, `Producto Nuevo ${item.sku}`);
@@ -133,7 +159,15 @@ export default function RecepcionPage() {
         });
     };
 
-    // PASO 3: Enviar la recepción final adaptada a la documentación oficial
+    const handleCostChange = (index: number, newCost: number) => {
+        setItems(prev => {
+            const updated = [...prev];
+            updated[index].netUnitValue = newCost;
+            updated[index].totalNet = newCost * updated[index].quantity;
+            return updated;
+        });
+    };
+
     const handleFinalSubmit = async () => {
         if (!selectedOffice) return alert('Debes seleccionar una sucursal.');
         if (!documentNumber.trim()) return alert('Debes ingresar el número de factura.');
@@ -142,11 +176,11 @@ export default function RecepcionPage() {
 
         const payload = {
             officeId: Number(selectedOffice),
-            documentNumber: documentNumber, // Va limpio como string de puros números
+            documentNumber: documentNumber,
             details: items.map(item => ({
-                sku: item.sku, // Mandamos el SKU al campo 'code' del backend
+                sku: item.sku,
                 quantity: item.quantity,
-                netUnitValue: item.netUnitValue, // Costo unitario neto ya calculado con descuento
+                netUnitValue: item.netUnitValue,
             }))
         };
 
@@ -164,6 +198,9 @@ export default function RecepcionPage() {
 
     const allSkusResolved = items.length > 0 && items.every(item => item.exists === true);
 
+    // NUEVO CAMBIO: Calcular dinámicamente la suma total de las líneas para verificar cuadratura
+    const invoiceTotalNet = items.reduce((acc, item) => acc + item.totalNet, 0);
+
     return (
         <div className="max-w-5xl mx-auto p-6 space-y-8">
             <header className="border-b pb-4">
@@ -178,7 +215,7 @@ export default function RecepcionPage() {
                     <input
                         type="file"
                         accept="image/*,application/pdf"
-                        multiple // PERMITE SELECCIONAR MÚLTIPLES IMÁGENES
+                        multiple
                         onChange={handleFileUpload}
                         disabled={loading}
                         className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
@@ -196,6 +233,7 @@ export default function RecepcionPage() {
                     <table className="w-full text-left border-collapse">
                         <thead>
                         <tr className="bg-gray-100 text-xs font-semibold text-gray-600 uppercase border-b">
+                            <th className="p-4 text-left w-[60px]">#</th>
                             <th className="p-4">SKU Factura</th>
                             <th className="p-4">Cantidad</th>
                             <th className="p-4">Costo Real Unitario (Neto)</th>
@@ -207,9 +245,49 @@ export default function RecepcionPage() {
                         <tbody className="divide-y text-sm text-gray-600">
                         {items.map((item, index) => (
                             <tr key={index} className="hover:bg-gray-50">
-                                <td className="p-4 font-mono font-medium">{item.sku}</td>
+                                <td className="p-4 font-medium text-gray-400">
+                                    {index + 1}
+                                </td>
+                                <td className="p-4">
+                                    <input
+                                        type="text"
+                                        value={item.sku}
+                                        onChange={(e) => {
+                                            setItems(prev => {
+                                                const updated = [...prev];
+                                                updated[index].sku = e.target.value;
+                                                return updated;
+                                            });
+                                        }}
+                                        onBlur={(e) => handleSkuChange(index, e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                handleSkuChange(index, (e.target as HTMLInputElement).value);
+                                            }
+                                        }}
+                                        className="font-mono font-medium px-2 py-1 border rounded bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-[180px]"
+                                        placeholder="Corregir SKU"
+                                        disabled={loading}
+                                    />
+                                </td>
                                 <td className="p-4">{item.quantity}</td>
-                                <td className="p-4">${item.netUnitValue.toLocaleString('es-CL')}</td>
+                                <td className="p-4">
+                                    <div className="flex items-center space-x-1">
+                                        <span className="text-gray-400">$</span>
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            value={item.netUnitValue}
+                                            onChange={(e) => {
+                                                const val = Number(e.target.value) || 0;
+                                                handleCostChange(index, val);
+                                            }}
+                                            className="px-2 py-1 border rounded bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-[110px]"
+                                            placeholder="Costo"
+                                            disabled={loading}
+                                        />
+                                    </div>
+                                </td>
                                 <td className="p-4">${item.totalNet.toLocaleString('es-CL')}</td>
                                 <td className="p-4">
                                     {item.exists === null && <span className="text-gray-400 animate-pulse">Validando...</span>}
@@ -230,6 +308,16 @@ export default function RecepcionPage() {
                             </tr>
                         ))}
                         </tbody>
+
+                        {/* NUEVO CAMBIO: Agregado el tfoot para renderizar invoiceTotalNet */}
+                        <tfoot className="bg-gray-100/80 font-semibold text-gray-700 border-t-2 border-gray-200">
+                        <tr>
+                            <td colSpan={4} className="p-4 text-right">Total Neto Factura:</td>
+                            <td colSpan={3} className="p-4 text-left text-blue-700 text-base font-bold">
+                                ${invoiceTotalNet.toLocaleString('es-CL')}
+                            </td>
+                        </tr>
+                        </tfoot>
                     </table>
                 </section>
             )}
@@ -263,7 +351,6 @@ export default function RecepcionPage() {
                                 pattern="[0-9]*"
                                 placeholder="Ej: 14850"
                                 value={documentNumber}
-                                // SEGUNDO TODO: Remueve inmediatamente cualquier carácter que no sea número
                                 onChange={(e) => setDocumentNumber(e.target.value.replace(/\D/g, ''))}
                                 disabled={!allSkusResolved || loading}
                                 className="p-2 border rounded-md bg-white text-sm"

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI, Type } from '@google/genai';
 
+export const maxDuration = 60; // Le da hasta 60 segundos a la función para responder
+
+//export const runtime = 'edge'; // Usa la infraestructura Edge que no tiene el límite de 10 segundos
+
 // Forzamos el Edge Runtime para evitar el límite de 10 segundos de Vercel (Hobby)
 export const runtime = 'edge';
 
