@@ -6,7 +6,7 @@ import { checkSkuInBsale, createBsaleProduct, submitStockReception, getBsaleOffi
 interface UiItem {
     sku: string;
     quantity: number;
-    netUnitValue: number;
+    netUnitValue: number; // Costo base de lista extraído
     totalNet: number;
     exists: boolean | null;
     variantId: number | null;
@@ -26,6 +26,10 @@ export default function RecepcionPage() {
     const [documentNumber, setDocumentNumber] = useState<string>('');
     const [items, setItems] = useState<UiItem[]>([]);
 
+    // Estados para los descuentos globales en cascada
+    const [discount1, setDiscount1] = useState<number>(0);
+    const [discount2, setDiscount2] = useState<number>(0);
+
     useEffect(() => {
         async function fetchOffices() {
             const res = await getBsaleOffices();
@@ -34,13 +38,19 @@ export default function RecepcionPage() {
         fetchOffices();
     }, []);
 
-    // PASO 1: Subir una o más páginas/imágenes de la factura
+    // Factor dinámico compuesto de descuento (Ej: 7% y 10% -> 0.93 * 0.90 = 0.837)
+    const factorDiscount1 = 1 - (discount1 / 100);
+    const factorDiscount2 = 1 - (discount2 / 100);
+    const compositeDiscountFactor = factorDiscount1 * factorDiscount2;
+
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const fileList = e.target.files;
         if (!fileList || fileList.length === 0) return;
 
         setLoading(true);
         setItems([]);
+        setDiscount1(0);
+        setDiscount2(0);
 
         const formData = new FormData();
         Array.from(fileList).forEach((file) => {
@@ -54,7 +64,6 @@ export default function RecepcionPage() {
             });
 
             if (!response.ok) throw new Error('Error al procesar la factura con IA');
-
             const data = await response.json();
 
             if (data.documentNumber) {
@@ -70,12 +79,12 @@ export default function RecepcionPage() {
                 }));
                 setItems(initialItems);
 
-                // PASO 2: Validar SKUs en paralelo
                 await Promise.all(
                     initialItems.map(async (item, index) => {
                         const validation = await checkSkuInBsale(item.sku);
                         setItems(prev => {
                             const updated = [...prev];
+                            if (!updated[index]) return prev;
                             if (validation.exists) {
                                 updated[index].exists = true;
                                 updated[index].variantId = validation.variantId ?? null;
@@ -96,7 +105,21 @@ export default function RecepcionPage() {
         }
     };
 
+    const handleAddItemManual = () => {
+        setItems(prev => [...prev, {
+            sku: '',
+            quantity: 1,
+            netUnitValue: 0,
+            totalNet: 0,
+            exists: false,
+            variantId: null,
+            bsaleName: 'Digita un SKU para buscar'
+        }]);
+    };
+
     const handleSkuChange = async (index: number, newSku: string) => {
+        if (!newSku.trim()) return;
+
         setItems(prev => {
             const updated = [...prev];
             updated[index].sku = newSku;
@@ -109,7 +132,7 @@ export default function RecepcionPage() {
 
         setItems(prev => {
             const updated = [...prev];
-            if (updated[index].sku === newSku) {
+            if (updated[index] && updated[index].sku === newSku) {
                 if (validation.exists) {
                     updated[index].exists = true;
                     updated[index].variantId = validation.variantId ?? null;
@@ -138,10 +161,13 @@ export default function RecepcionPage() {
             return updated;
         });
 
+        // Al crear el producto, enviamos el costo ya prorrateado real para inicializarlo de manera correcta
+        const realProratedCost = Math.round(item.netUnitValue * compositeDiscountFactor);
+
         const res = await createBsaleProduct({
             name: nameInput,
             sku: item.sku,
-            netUnitValue: item.netUnitValue,
+            netUnitValue: realProratedCost,
             priceValue: Number(priceInput)
         });
 
@@ -168,6 +194,23 @@ export default function RecepcionPage() {
         });
     };
 
+    const handleQuantityChange = (index: number, newQty: number) => {
+        setItems(prev => {
+            const updated = [...prev];
+            updated[index].quantity = newQty;
+            updated[index].totalNet = updated[index].netUnitValue * newQty;
+            return updated;
+        });
+    };
+
+    const handleRemoveItem = (index: number) => {
+        setItems(prev => prev.filter((_, i) => i !== index));
+    };
+
+    // Totales de la Factura (Resumen para el usuario)
+    const invoiceSubtotalNet = items.reduce((acc, item) => acc + item.totalNet, 0);
+    const invoiceTotalNetFinal = Math.round(invoiceSubtotalNet * compositeDiscountFactor);
+
     const handleFinalSubmit = async () => {
         if (!selectedOffice) return alert('Debes seleccionar una sucursal.');
         if (!documentNumber.trim()) return alert('Debes ingresar el número de factura.');
@@ -177,10 +220,11 @@ export default function RecepcionPage() {
         const payload = {
             officeId: Number(selectedOffice),
             documentNumber: documentNumber,
+            // AQUÍ: Se calcula y envía automáticamente el costo unitario ya prorrateado a Bsale
             details: items.map(item => ({
                 sku: item.sku,
                 quantity: item.quantity,
-                netUnitValue: item.netUnitValue,
+                netUnitValue: Math.round(item.netUnitValue * compositeDiscountFactor),
             }))
         };
 
@@ -191,26 +235,33 @@ export default function RecepcionPage() {
             alert(`¡Recepción de Stock creada exitosamente en Bsale! ID: ${res.receptionId}`);
             setItems([]);
             setDocumentNumber('');
+            setDiscount1(0);
+            setDiscount2(0);
         } else {
             alert(`Error al guardar la recepción: ${res.error}`);
         }
     };
 
-    const allSkusResolved = items.length > 0 && items.every(item => item.exists === true);
-
-    // NUEVO CAMBIO: Calcular dinámicamente la suma total de las líneas para verificar cuadratura
-    const invoiceTotalNet = items.reduce((acc, item) => acc + item.totalNet, 0);
+    const allSkusResolved = items.length > 0 && items.every(item => item.exists === true && item.sku.trim() !== '');
 
     return (
         <div className="max-w-5xl mx-auto p-6 space-y-8">
             <header className="border-b pb-4">
                 <h1 className="text-2xl font-bold text-gray-800">Recepción de Stock Automatizada</h1>
-                <p className="text-sm text-gray-500">Sube una o más páginas de tu factura. La IA calculará los costos con descuento real.</p>
+                <p className="text-sm text-gray-500">Sube tu factura. El sistema distribuye los descuentos automáticamente en cada producto.</p>
             </header>
 
-            {/* PASO 1: Subida de múltiples archivos */}
             <section className="bg-white p-6 rounded-lg border shadow-sm space-y-4">
-                <h2 className="text-lg font-semibold text-gray-700">1. Carga la Factura (Soporta múltiples páginas)</h2>
+                <div className="flex justify-between items-center">
+                    <h2 className="text-lg font-semibold text-gray-700">1. Carga la Factura u Operación Manual</h2>
+                    <button
+                        type="button"
+                        onClick={handleAddItemManual}
+                        className="px-4 py-2 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-700 font-medium shadow-sm transition"
+                    >
+                        ➕ Agregar Ítem Manual
+                    </button>
+                </div>
                 <div className="flex items-center space-x-4">
                     <input
                         type="file"
@@ -220,109 +271,168 @@ export default function RecepcionPage() {
                         disabled={loading}
                         className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
                     />
-                    {loading && <span className="text-sm text-blue-600 animate-pulse font-medium">Procesando con IA...</span>}
+                    {loading && <span className="text-sm text-blue-600 animate-pulse font-medium">Procesando...</span>}
                 </div>
             </section>
 
-            {/* PASO 2: Tabla de Ítems */}
             {items.length > 0 && (
                 <section className="bg-white rounded-lg border shadow-sm overflow-hidden">
                     <div className="p-6 bg-gray-50 border-b">
-                        <h2 className="text-lg font-semibold text-gray-700">2. Validación de Productos (SKU) y Costo Real Neto</h2>
+                        <h2 className="text-lg font-semibold text-gray-700">2. Validación de Productos (SKU) y Prorrateo de Costos</h2>
                     </div>
                     <table className="w-full text-left border-collapse">
                         <thead>
                         <tr className="bg-gray-100 text-xs font-semibold text-gray-600 uppercase border-b">
-                            <th className="p-4 text-left w-[60px]">#</th>
+                            <th className="p-4 text-left w-[50px]">#</th>
                             <th className="p-4">SKU Factura</th>
-                            <th className="p-4">Cantidad</th>
-                            <th className="p-4">Costo Real Unitario (Neto)</th>
-                            <th className="p-4">Total Neto</th>
+                            <th className="p-4 w-[90px]">Cantidad</th>
+                            <th className="p-4">Costo Lista (Neto)</th>
+                            <th className="p-4 text-blue-700">Costo Real Prorrateado</th>
+                            <th className="p-4">Total Línea (Lista)</th>
                             <th className="p-4">Estado Bsale</th>
                             <th className="p-4 text-right">Acción</th>
                         </tr>
                         </thead>
                         <tbody className="divide-y text-sm text-gray-600">
-                        {items.map((item, index) => (
-                            <tr key={index} className="hover:bg-gray-50">
-                                <td className="p-4 font-medium text-gray-400">
-                                    {index + 1}
-                                </td>
-                                <td className="p-4">
-                                    <input
-                                        type="text"
-                                        value={item.sku}
-                                        onChange={(e) => {
-                                            setItems(prev => {
-                                                const updated = [...prev];
-                                                updated[index].sku = e.target.value;
-                                                return updated;
-                                            });
-                                        }}
-                                        onBlur={(e) => handleSkuChange(index, e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                handleSkuChange(index, (e.target as HTMLInputElement).value);
-                                            }
-                                        }}
-                                        className="font-mono font-medium px-2 py-1 border rounded bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-[180px]"
-                                        placeholder="Corregir SKU"
-                                        disabled={loading}
-                                    />
-                                </td>
-                                <td className="p-4">{item.quantity}</td>
-                                <td className="p-4">
-                                    <div className="flex items-center space-x-1">
-                                        <span className="text-gray-400">$</span>
+                        {items.map((item, index) => {
+                            // Cálculo dinámico automático del costo unitario real con los descuentos globales aplicados
+                            const proratedUnitCost = Math.round(item.netUnitValue * compositeDiscountFactor);
+
+                            return (
+                                <tr key={index} className="hover:bg-gray-50">
+                                    <td className="p-4 font-medium text-gray-400">{index + 1}</td>
+                                    <td className="p-4">
                                         <input
-                                            type="number"
-                                            min="0"
-                                            value={item.netUnitValue}
+                                            type="text"
+                                            value={item.sku}
                                             onChange={(e) => {
-                                                const val = Number(e.target.value) || 0;
-                                                handleCostChange(index, val);
+                                                setItems(prev => {
+                                                    const updated = [...prev];
+                                                    updated[index].sku = e.target.value;
+                                                    return updated;
+                                                });
                                             }}
-                                            className="px-2 py-1 border rounded bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-[110px]"
-                                            placeholder="Costo"
+                                            onBlur={(e) => handleSkuChange(index, e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    handleSkuChange(index, (e.target as HTMLInputElement).value);
+                                                }
+                                            }}
+                                            className="font-mono font-medium px-2 py-1 border rounded bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-[150px]"
+                                            placeholder="Ingresar SKU"
                                             disabled={loading}
                                         />
-                                    </div>
-                                </td>
-                                <td className="p-4">${item.totalNet.toLocaleString('es-CL')}</td>
-                                <td className="p-4">
-                                    {item.exists === null && <span className="text-gray-400 animate-pulse">Validando...</span>}
-                                    {item.exists === true && <span className="text-green-600 font-medium">✓ {item.bsaleName}</span>}
-                                    {item.exists === false && <span className="text-red-500 font-medium">✗ No existe</span>}
-                                </td>
-                                <td className="p-4 text-right">
-                                    {item.exists === false && (
+                                    </td>
+                                    <td className="p-4">
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            value={item.quantity}
+                                            onChange={(e) => handleQuantityChange(index, Number(e.target.value) || 1)}
+                                            className="px-2 py-1 border rounded bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full"
+                                            disabled={loading}
+                                        />
+                                    </td>
+                                    <td className="p-4">
+                                        <div className="flex items-center space-x-1">
+                                            <span className="text-gray-400">$</span>
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                value={item.netUnitValue}
+                                                onChange={(e) => handleCostChange(index, Number(e.target.value) || 0)}
+                                                className="px-2 py-1 border rounded bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-[100px]"
+                                                placeholder="Costo"
+                                                disabled={loading}
+                                            />
+                                        </div>
+                                    </td>
+                                    {/* COLUMNA NUEVA: Muestra automáticamente el costo que se enviará a Bsale */}
+                                    <td className="p-4 font-semibold text-blue-700 bg-blue-50/30">
+                                        ${proratedUnitCost.toLocaleString('es-CL')}
+                                    </td>
+                                    <td className="p-4">${item.totalNet.toLocaleString('es-CL')}</td>
+                                    <td className="p-4">
+                                        {item.sku === '' && <span className="text-amber-500 font-medium">Falta SKU</span>}
+                                        {item.sku !== '' && item.exists === null && <span className="text-gray-400 animate-pulse">Validando...</span>}
+                                        {item.sku !== '' && item.exists === true && <span className="text-green-600 font-medium">✓ {item.bsaleName}</span>}
+                                        {item.sku !== '' && item.exists === false && <span className="text-red-500 font-medium">✗ No existe</span>}
+                                    </td>
+                                    <td className="p-4 text-right space-x-2">
+                                        {item.exists === false && item.sku !== '' && (
+                                            <button
+                                                onClick={() => handleCreateProduct(index)}
+                                                disabled={item.isCreating}
+                                                className="px-3 py-1 text-xs bg-amber-500 text-white rounded hover:bg-amber-600 disabled:opacity-50"
+                                            >
+                                                {item.isCreating ? 'Creando...' : '+ Crear'}
+                                            </button>
+                                        )}
                                         <button
-                                            onClick={() => handleCreateProduct(index)}
-                                            disabled={item.isCreating}
-                                            className="px-3 py-1 text-xs bg-amber-500 text-white rounded hover:bg-amber-600 disabled:opacity-50"
+                                            onClick={() => handleRemoveItem(index)}
+                                            className="text-xs text-gray-400 hover:text-red-500 font-medium p-1"
+                                            title="Eliminar fila"
                                         >
-                                            {item.isCreating ? 'Creando...' : '+ Crear Producto'}
+                                            ✕
                                         </button>
-                                    )}
-                                </td>
-                            </tr>
-                        ))}
+                                    </td>
+                                </tr>
+                            );
+                        })}
                         </tbody>
-
-                        {/* NUEVO CAMBIO: Agregado el tfoot para renderizar invoiceTotalNet */}
-                        <tfoot className="bg-gray-100/80 font-semibold text-gray-700 border-t-2 border-gray-200">
-                        <tr>
-                            <td colSpan={4} className="p-4 text-right">Total Neto Factura:</td>
-                            <td colSpan={3} className="p-4 text-left text-blue-700 text-base font-bold">
-                                ${invoiceTotalNet.toLocaleString('es-CL')}
-                            </td>
-                        </tr>
-                        </tfoot>
                     </table>
+
+                    <div className="p-6 bg-gray-50 border-t flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                        <div className="flex flex-wrap gap-4 items-center bg-white p-3 border rounded-md shadow-sm">
+                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Descuentos Factura:</span>
+                            <div className="flex items-center space-x-1">
+                                <label className="text-xs text-gray-600">Desc 1:</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    value={discount1}
+                                    onChange={(e) => setDiscount1(Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
+                                    className="w-14 px-1 py-0.5 border rounded text-center text-sm font-medium focus:ring-2 focus:ring-blue-500"
+                                    placeholder="0"
+                                />
+                                <span className="text-sm text-gray-500">%</span>
+                            </div>
+                            <div className="flex items-center space-x-1">
+                                <label className="text-xs text-gray-600">Desc 2:</label>
+                                <input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    value={discount2}
+                                    onChange={(e) => setDiscount2(Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
+                                    className="w-14 px-1 py-0.5 border rounded text-center text-sm font-medium focus:ring-2 focus:ring-blue-500"
+                                    placeholder="0"
+                                />
+                                <span className="text-sm text-gray-500">%</span>
+                            </div>
+                        </div>
+
+                        <div className="text-right space-y-1 font-medium text-sm text-gray-600 w-full md:w-auto">
+                            <div className="flex justify-between md:justify-end gap-8">
+                                <span>Subtotal Neto:</span>
+                                <span className="font-mono">${invoiceSubtotalNet.toLocaleString('es-CL')}</span>
+                            </div>
+                            {(discount1 > 0 || discount2 > 0) && (
+                                <div className="flex justify-between md:justify-end gap-8 text-amber-600 text-xs">
+                                    <span>Descuento aplicado en cascada:</span>
+                                    <span className="font-mono">-${(invoiceSubtotalNet - invoiceTotalNetFinal).toLocaleString('es-CL')}</span>
+                                </div>
+                            )}
+                            <div className="flex justify-between md:justify-end gap-8 border-t pt-1 font-bold text-gray-800 text-base">
+                                <span>Total Neto Factura (Control):</span>
+                                <span className="text-blue-700 font-mono">${invoiceTotalNetFinal.toLocaleString('es-CL')}</span>
+                            </div>
+                        </div>
+                    </div>
                 </section>
             )}
 
-            {/* PASO 3: Sucursal y Validación estricta de números */}
             {items.length > 0 && (
                 <section className={`p-6 rounded-lg border shadow-sm space-y-6 transition ${allSkusResolved ? 'bg-green-50/40 border-green-200' : 'bg-gray-50 border-gray-200 opacity-60'}`}>
                     <h2 className="text-lg font-semibold text-gray-700">3. Datos de Ingreso de Stock</h2>
@@ -362,7 +472,7 @@ export default function RecepcionPage() {
                         <button
                             onClick={handleFinalSubmit}
                             disabled={!allSkusResolved || loading}
-                            className="px-6 py-2 bg-blue-600 text-white font-semibold rounded-md shadow hover:bg-blue-700 disabled:bg-gray-300"
+                            className="px-6 py-2 bg-blue-600 text-white font-semibold rounded-md shadow hover:bg-blue-700 disabled:bg-gray-300 transition"
                         >
                             {loading ? 'Procesando Ingreso...' : 'Confirmar e Ingresar Stock'}
                         </button>
