@@ -161,12 +161,11 @@ export default function RecepcionPage() {
             return updated;
         });
 
-        // Al crear el producto, enviamos el costo ya prorrateado real para inicializarlo de manera correcta
         const realProratedCost = Math.round(item.netUnitValue * compositeDiscountFactor);
 
         const res = await createBsaleProduct({
             name: nameInput,
-            sku: item.sku,
+            code: item.sku,
             netUnitValue: realProratedCost,
             priceValue: Number(priceInput)
         });
@@ -207,7 +206,6 @@ export default function RecepcionPage() {
         setItems(prev => prev.filter((_, i) => i !== index));
     };
 
-    // Totales de la Factura (Resumen para el usuario)
     const invoiceSubtotalNet = items.reduce((acc, item) => acc + item.totalNet, 0);
     const invoiceTotalNetFinal = Math.round(invoiceSubtotalNet * compositeDiscountFactor);
 
@@ -220,9 +218,8 @@ export default function RecepcionPage() {
         const payload = {
             officeId: Number(selectedOffice),
             documentNumber: documentNumber,
-            // AQUÍ: Se calcula y envía automáticamente el costo unitario ya prorrateado a Bsale
             details: items.map(item => ({
-                sku: item.sku,
+                code: item.sku,
                 quantity: item.quantity,
                 netUnitValue: Math.round(item.netUnitValue * compositeDiscountFactor),
             }))
@@ -248,9 +245,9 @@ export default function RecepcionPage() {
         <div className="max-w-5xl mx-auto p-6 space-y-8">
             <header className="border-b pb-4">
                 <h1 className="text-2xl font-bold text-gray-800">Recepción de Stock Automatizada</h1>
-                <p className="text-sm text-gray-500">Sube tu factura. El sistema distribuye los descuentos automáticamente en cada producto.</p>
             </header>
 
+            {/* PASO 1: Subida de Archivos y Botón de Inicio Manual siempre visible */}
             <section className="bg-white p-6 rounded-lg border shadow-sm space-y-4">
                 <div className="flex justify-between items-center">
                     <h2 className="text-lg font-semibold text-gray-700">1. Carga la Factura u Operación Manual</h2>
@@ -275,10 +272,19 @@ export default function RecepcionPage() {
                 </div>
             </section>
 
+            {/* PASO 2: Tabla de Ítems */}
             {items.length > 0 && (
                 <section className="bg-white rounded-lg border shadow-sm overflow-hidden">
-                    <div className="p-6 bg-gray-50 border-b">
+                    <div className="p-6 bg-gray-50 border-b flex justify-between items-center">
                         <h2 className="text-lg font-semibold text-gray-700">2. Validación de Productos (SKU) y Prorrateo de Costos</h2>
+                        {/* Se mantiene una réplica rápida opcional aquí para comodidad */}
+                        <button
+                            type="button"
+                            onClick={handleAddItemManual}
+                            className="px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 font-medium transition"
+                        >
+                            ➕ Otro Ítem Manual
+                        </button>
                     </div>
                     <table className="w-full text-left border-collapse">
                         <thead>
@@ -295,7 +301,6 @@ export default function RecepcionPage() {
                         </thead>
                         <tbody className="divide-y text-sm text-gray-600">
                         {items.map((item, index) => {
-                            // Cálculo dinámico automático del costo unitario real con los descuentos globales aplicados
                             const proratedUnitCost = Math.round(item.netUnitValue * compositeDiscountFactor);
 
                             return (
@@ -347,7 +352,6 @@ export default function RecepcionPage() {
                                             />
                                         </div>
                                     </td>
-                                    {/* COLUMNA NUEVA: Muestra automáticamente el costo que se enviará a Bsale */}
                                     <td className="p-4 font-semibold text-blue-700 bg-blue-50/30">
                                         ${proratedUnitCost.toLocaleString('es-CL')}
                                     </td>
@@ -433,6 +437,7 @@ export default function RecepcionPage() {
                 </section>
             )}
 
+            {/* PASO 3 */}
             {items.length > 0 && (
                 <section className={`p-6 rounded-lg border shadow-sm space-y-6 transition ${allSkusResolved ? 'bg-green-50/40 border-green-200' : 'bg-gray-50 border-gray-200 opacity-60'}`}>
                     <h2 className="text-lg font-semibold text-gray-700">3. Datos de Ingreso de Stock</h2>

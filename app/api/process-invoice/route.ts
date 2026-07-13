@@ -20,11 +20,19 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'No se subieron archivos' }, { status: 400 });
         }
 
-        // Convertimos cada archivo a la estructura que exige el SDK de Gemini
+        // Convertimos cada archivo a la estructura que exige el SDK de Gemini de forma compatible con Edge (Sin Buffer de Node)
         const mediaParts = await Promise.all(
             files.map(async (file) => {
                 const arrayBuffer = await file.arrayBuffer();
-                const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+                const uint8Array = new Uint8Array(arrayBuffer);
+                let binary = '';
+                const len = uint8Array.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(uint8Array[i]);
+                }
+                const base64Data = btoa(binary);
+
                 return {
                     inlineData: {
                         mimeType: file.type,

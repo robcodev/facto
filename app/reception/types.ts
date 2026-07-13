@@ -1,5 +1,5 @@
 export interface InvoiceItem {
-    sku: string;
+    code: string;
     quantity: number;
     netUnitValue: number;
     discount?: number;

@@ -56,7 +56,7 @@ export async function checkSkuInBsale(sku: string) {
  */
 export async function createBsaleProduct(productData: {
     name: string;
-    sku: string;
+    code: string;
     netUnitValue: number; // Costo unitario neto extraído por la IA
     priceValue: number;   // Precio de venta final ingresado por el usuario
 }) {
@@ -67,7 +67,7 @@ export async function createBsaleProduct(productData: {
             allowDecimal: 0,
             variants: [
                 {
-                    code: productData.sku,
+                    code: productData.code,
                     description: productData.name,
                     cost: productData.netUnitValue, // Guardamos el costo de entrada neto
                     price: productData.priceValue,  // Precio de venta final
@@ -110,7 +110,7 @@ export async function submitStockReception(payload: {
     officeId: number;        // ID de la sucursal elegida
     documentNumber: string;  // Número de la factura (se convertirá a Integer)
     details: {
-        sku: string;         // Usamos el SKU directamente como 'code'
+        code: string;         // Usamos el SKU directamente como 'code'
         quantity: number;    // Cantidad ingreso de stock
         netUnitValue: number;  // Costo asociado al ingreso (cost)
     }[];
@@ -124,7 +124,7 @@ export async function submitStockReception(payload: {
             note: "Ingreso automatizado mediante Recepción por IA",
             details: payload.details.map(item => ({
                 quantity: item.quantity,
-                code: item.sku, // Referenciamos al producto mediante su 'code' (SKU)
+                code: item.code, // Referenciamos al producto mediante su 'code' (SKU)
                 cost: item.netUnitValue // Costo asociado al ingreso
             })),
         };
