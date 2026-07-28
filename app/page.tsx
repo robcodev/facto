@@ -244,20 +244,20 @@ export default function RecepcionPage() {
     return (
         <div className="max-w-5xl mx-auto p-6 space-y-8">
             <header className="border-b pb-4">
-                <h1 className="text-2xl font-bold text-gray-800">Recepción de Stock Automatizada</h1>
+                <h1 className="text-2xl font-bold text-gray-800">Recepción de Stock </h1>
             </header>
 
             {/* PASO 1: Subida de Archivos y Botón de Inicio Manual siempre visible */}
             <section className="bg-white p-6 rounded-lg border shadow-sm space-y-4">
                 <div className="flex justify-between items-center">
-                    <h2 className="text-lg font-semibold text-gray-700">1. Carga la Factura u Operación Manual</h2>
-                    <button
-                        type="button"
-                        onClick={handleAddItemManual}
-                        className="px-4 py-2 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-700 font-medium shadow-sm transition"
-                    >
-                        ➕ Agregar Ítem Manual
-                    </button>
+                    <h2 className="text-lg font-semibold text-gray-700">1. Carga la Factura</h2>
+                    {/*<button*/}
+                    {/*    type="button"*/}
+                    {/*    onClick={handleAddItemManual}*/}
+                    {/*    className="px-4 py-2 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-700 font-medium shadow-sm transition"*/}
+                    {/*>*/}
+                    {/*    ➕ Agregar Ítem Manual*/}
+                    {/*</button>*/}
                 </div>
                 <div className="flex items-center space-x-4">
                     <input
@@ -276,15 +276,9 @@ export default function RecepcionPage() {
             {items.length > 0 && (
                 <section className="bg-white rounded-lg border shadow-sm overflow-hidden">
                     <div className="p-6 bg-gray-50 border-b flex justify-between items-center">
-                        <h2 className="text-lg font-semibold text-gray-700">2. Validación de Productos (SKU) y Prorrateo de Costos</h2>
+                        <h2 className="text-lg font-semibold text-gray-700">2. Validación de Productos (SKU) y Costos</h2>
                         {/* Se mantiene una réplica rápida opcional aquí para comodidad */}
-                        <button
-                            type="button"
-                            onClick={handleAddItemManual}
-                            className="px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 font-medium transition"
-                        >
-                            ➕ Otro Ítem Manual
-                        </button>
+
                     </div>
                     <table className="w-full text-left border-collapse">
                         <thead>
@@ -481,6 +475,13 @@ export default function RecepcionPage() {
                         >
                             {loading ? 'Procesando Ingreso...' : 'Confirmar e Ingresar Stock'}
                         </button>
+                        {/*<button*/}
+                        {/*    type="button"*/}
+                        {/*    onClick={handleAddItemManual}*/}
+                        {/*    className="px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 font-medium transition"*/}
+                        {/*>*/}
+                        {/*    AGREGAR Ítem Manual*/}
+                        {/*</button>*/}
                     </div>
                 </section>
             )}
