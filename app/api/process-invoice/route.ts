@@ -3,9 +3,6 @@ import { GoogleGenAI, Type } from '@google/genai';
 
 export const maxDuration = 60; // Le da hasta 60 segundos a la función para responder
 
-//export const runtime = 'edge'; // Usa la infraestructura Edge que no tiene el límite de 10 segundos
-
-// Forzamos el Edge Runtime para evitar el límite de 10 segundos de Vercel (Hobby)
 export const runtime = 'edge';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -53,7 +50,7 @@ export async function POST(req: NextRequest) {
      3. Captura el número de la factura. Si contiene letras o caracteres no numéricos, extrae SOLO los dígitos numéricos.`;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.1-flash-lite',
             // Pasamos todas las imágenes y el prompt en el mismo arreglo de contenidos
             contents: [...mediaParts, promptText],
             config: {
