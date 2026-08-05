@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI, Type } from '@google/genai';
+import {log} from "node:util";
 
 export const maxDuration = 60; // Le da hasta 60 segundos a la función para responder
 
