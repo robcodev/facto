@@ -6,15 +6,62 @@ export const maxDuration = 60; // Le da hasta 60 segundos a la función para res
 export const runtime = 'edge';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const MAX_FILES = 10;
+const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
+const MAX_TOTAL_SIZE_BYTES = 50 * 1024 * 1024;
+const ALLOWED_MIME_TYPES = new Set([
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/heic',
+    'image/heif',
+]);
 
 export async function POST(req: NextRequest) {
     try {
         const formData = await req.formData();
         // Capturamos todos los archivos bajo la llave 'files' (soporte multipágina)
-        const files = formData.getAll('files') as File[];
+        const entries = formData.getAll('files');
 
-        if (!files || files.length === 0) {
+        if (entries.length === 0) {
             return NextResponse.json({ error: 'No se subieron archivos' }, { status: 400 });
+        }
+
+        if (entries.length > MAX_FILES) {
+            return NextResponse.json(
+                { error: `Puedes subir un máximo de ${MAX_FILES} archivos por factura.` },
+                { status: 400 }
+            );
+        }
+
+        if (entries.some((entry) => !(entry instanceof File))) {
+            return NextResponse.json({ error: 'La solicitud contiene datos que no son archivos.' }, { status: 400 });
+        }
+
+        const files = entries as File[];
+        const unsupportedFile = files.find((file) => !ALLOWED_MIME_TYPES.has(file.type.toLowerCase()));
+        if (unsupportedFile) {
+            return NextResponse.json(
+                { error: `El archivo "${unsupportedFile.name}" no es una imagen compatible ni un PDF.` },
+                { status: 415 }
+            );
+        }
+
+        const oversizedFile = files.find((file) => file.size > MAX_FILE_SIZE_BYTES);
+        if (oversizedFile) {
+            return NextResponse.json(
+                { error: `El archivo "${oversizedFile.name}" supera el máximo de 20 MB.` },
+                { status: 413 }
+            );
+        }
+
+        const totalSize = files.reduce((total, file) => total + file.size, 0);
+        if (totalSize > MAX_TOTAL_SIZE_BYTES) {
+            return NextResponse.json(
+                { error: 'El conjunto de archivos supera el máximo total de 50 MB.' },
+                { status: 413 }
+            );
         }
 
         // Convertimos cada archivo a la estructura que exige el SDK de Gemini de forma compatible con Edge (Sin Buffer de Node)
@@ -83,8 +130,11 @@ export async function POST(req: NextRequest) {
         if (!resultText) throw new Error('La IA no devolvió respuesta');
 
         return NextResponse.json(JSON.parse(resultText));
-    } catch (error: any) {
+    } catch (error) {
         console.error('Error procesando factura con IA:', error);
-        return NextResponse.json({ error: error.message || 'Error interno' }, { status: 500 });
+        return NextResponse.json(
+            { error: error instanceof Error ? error.message : 'Error interno' },
+            { status: 500 }
+        );
     }
 }

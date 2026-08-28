@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { checkSkuInBsale, createBsaleProduct, submitStockReception, getBsaleOffices } from './actions';
+import { checkSkuInBsale, submitStockReception, getBsaleOffices } from './actions';
+import type { BsaleOffice } from './types';
 
 interface UiItem {
     code: string;
@@ -11,17 +12,16 @@ interface UiItem {
     exists: boolean | null;
     variantId: number | null;
     bsaleName: string | null;
-    isCreating?: boolean;
 }
 
-interface Office {
-    id: number;
-    name: string;
+interface InvoiceProcessResponse {
+    documentNumber?: string;
+    invoiceItems?: Array<Pick<UiItem, 'code' | 'quantity' | 'netUnitValue' | 'totalNet'>>;
 }
 
 export default function RecepcionPage() {
     const [loading, setLoading] = useState(false);
-    const [offices, setOffices] = useState<Office[]>([]);
+    const [offices, setOffices] = useState<BsaleOffice[]>([]);
     const [selectedOffice, setSelectedOffice] = useState<string>('');
     const [documentNumber, setDocumentNumber] = useState<string>('');
     const [items, setItems] = useState<UiItem[]>([]);
@@ -63,15 +63,21 @@ export default function RecepcionPage() {
                 body: formData,
             });
 
-            if (!response.ok) throw new Error('Error al procesar la factura con IA');
-            const data = await response.json();
+            if (!response.ok) {
+                const errorResponse = (await response.json().catch(() => null)) as { error?: unknown } | null;
+                const message = typeof errorResponse?.error === 'string'
+                    ? errorResponse.error
+                    : 'Error al procesar la factura con IA';
+                throw new Error(message);
+            }
+            const data = (await response.json()) as InvoiceProcessResponse;
 
             if (data.documentNumber) {
                 setDocumentNumber(data.documentNumber.replace(/\D/g, ''));
             }
 
             if (data.invoiceItems && data.invoiceItems.length > 0) {
-                const initialItems: UiItem[] = data.invoiceItems.map((item: any) => ({
+                const initialItems: UiItem[] = data.invoiceItems.map((item) => ({
                     ...item,
                     exists: null,
                     variantId: null,
@@ -98,23 +104,11 @@ export default function RecepcionPage() {
                     })
                 );
             }
-        } catch (error: any) {
-            alert(error.message || 'Ocurrió un error.');
+        } catch (error) {
+            alert(error instanceof Error ? error.message : 'Ocurrió un error.');
         } finally {
             setLoading(false);
         }
-    };
-
-    const handleAddItemManual = () => {
-        setItems(prev => [...prev, {
-            code: '',
-            quantity: 1,
-            netUnitValue: 0,
-            totalNet: 0,
-            exists: false,
-            variantId: null,
-            bsaleName: 'Digita un SKU para buscar'
-        }]);
     };
 
     const handleSkuChange = async (index: number, newSku: string) => {
@@ -142,43 +136,6 @@ export default function RecepcionPage() {
                     updated[index].variantId = null;
                     updated[index].bsaleName = 'Producto No Existe';
                 }
-            }
-            return updated;
-        });
-    };
-
-    const handleCreateProduct = async (index: number) => {
-        const item = items[index];
-        const nameInput = prompt(`Ingresa el nombre para el SKU: ${item.code}`, `Producto Nuevo ${item.code}`);
-        if (!nameInput) return;
-
-        const priceInput = prompt(`Precio de venta final para ${item.code}:`, '1990');
-        if (!priceInput) return;
-
-        setItems(prev => {
-            const updated = [...prev];
-            updated[index].isCreating = true;
-            return updated;
-        });
-
-        const realProratedCost = Math.round(item.netUnitValue * compositeDiscountFactor);
-
-        const res = await createBsaleProduct({
-            name: nameInput,
-            code: item.code,
-            netUnitValue: realProratedCost,
-            priceValue: Number(priceInput)
-        });
-
-        setItems(prev => {
-            const updated = [...prev];
-            updated[index].isCreating = false;
-            if (res.success && res.variantId) {
-                updated[index].exists = true;
-                updated[index].variantId = res.variantId;
-                updated[index].bsaleName = nameInput;
-            } else {
-                alert(`Error al crear producto: ${res.error}`);
             }
             return updated;
         });
@@ -251,18 +208,11 @@ export default function RecepcionPage() {
             <section className="bg-white p-6 rounded-lg border shadow-sm space-y-4">
                 <div className="flex justify-between items-center">
                     <h2 className="text-lg font-semibold text-gray-700">1. Carga la Factura</h2>
-                    {/*<button*/}
-                    {/*    type="button"*/}
-                    {/*    onClick={handleAddItemManual}*/}
-                    {/*    className="px-4 py-2 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-700 font-medium shadow-sm transition"*/}
-                    {/*>*/}
-                    {/*    ➕ Agregar Ítem Manual*/}
-                    {/*</button>*/}
                 </div>
                 <div className="flex items-center space-x-4">
                     <input
                         type="file"
-                        accept="image/*,application/pdf"
+                        accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf"
                         multiple
                         onChange={handleFileUpload}
                         disabled={loading}
@@ -357,18 +307,10 @@ export default function RecepcionPage() {
                                         {item.code !== '' && item.exists === false && <span className="text-red-500 font-medium">✗ No existe</span>}
                                     </td>
                                     <td className="p-4 text-right space-x-2">
-                                        {item.exists === false && item.code !== '' && (
-                                            <button
-                                                onClick={() => handleCreateProduct(index)}
-                                                disabled={item.isCreating}
-                                                className="px-3 py-1 text-xs bg-amber-500 text-white rounded hover:bg-amber-600 disabled:opacity-50"
-                                            >
-                                                {item.isCreating ? 'Creando...' : '+ Crear'}
-                                            </button>
-                                        )}
                                         <button
                                             onClick={() => handleRemoveItem(index)}
-                                            className="text-xs text-gray-400 hover:text-red-500 font-medium p-1"
+                                            disabled={loading}
+                                            className="text-xs text-gray-400 hover:text-red-500 font-medium p-1 disabled:cursor-not-allowed disabled:opacity-40"
                                             title="Eliminar fila"
                                         >
                                             ✕
@@ -475,13 +417,6 @@ export default function RecepcionPage() {
                         >
                             {loading ? 'Procesando Ingreso...' : 'Confirmar e Ingresar Stock'}
                         </button>
-                        {/*<button*/}
-                        {/*    type="button"*/}
-                        {/*    onClick={handleAddItemManual}*/}
-                        {/*    className="px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 font-medium transition"*/}
-                        {/*>*/}
-                        {/*    AGREGAR Ítem Manual*/}
-                        {/*</button>*/}
                     </div>
                 </section>
             )}
