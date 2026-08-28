@@ -149,7 +149,7 @@ export default function RecepcionPage() {
 
     const handleCreateProduct = async (index: number) => {
         const item = items[index];
-        const nameInput = prompt(`Ingresa el nombre para el SKU: ${item.code}`, `Producto Nuevo ${item.sku}`);
+        const nameInput = prompt(`Ingresa el nombre para el SKU: ${item.code}`, `Producto Nuevo ${item.code}`);
         if (!nameInput) return;
 
         const priceInput = prompt(`Precio de venta final para ${item.code}:`, '1990');
