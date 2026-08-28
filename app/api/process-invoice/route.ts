@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI, Type } from '@google/genai';
-import {log} from "node:util";
 
 export const maxDuration = 60; // Le da hasta 60 segundos a la función para responder
 
@@ -66,12 +65,12 @@ export async function POST(req: NextRequest) {
                             items: {
                                 type: Type.OBJECT,
                                 properties: {
-                                    sku: { type: Type.STRING, description: 'Código único o SKU del producto' },
+                                    code: { type: Type.STRING, description: 'Código único o SKU del producto' },
                                     quantity: { type: Type.INTEGER, description: 'Cantidad de unidades' },
                                     netUnitValue: { type: Type.INTEGER, description: 'Valor unitario neto REAL final (Total Neto / Cantidad), con descuentos aplicados.' },
                                     totalNet: { type: Type.INTEGER, description: 'Monto total neto final de la línea' },
                                 },
-                                required: ['sku', 'quantity', 'netUnitValue', 'totalNet'],
+                                required: ['code', 'quantity', 'netUnitValue', 'totalNet'],
                             },
                         },
                     },
