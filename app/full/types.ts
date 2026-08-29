@@ -33,5 +33,6 @@ export type FullBsaleValidation = {
     fullVariantId: number | null;
     averageCost: number | null;
     costSource: 'last_reception' | 'average' | 'missing' | 'manual';
+    costDate?: string;
     error?: string;
 };

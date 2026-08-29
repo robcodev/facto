@@ -55,7 +55,7 @@ async function getLastCost(variantId: number) {
     return { cost: 0, source: 'missing' as const };
 }
 
-export async function validateFullSku(originalSku: string): Promise<FullBsaleValidation> {
+async function validateFullSkuBase(originalSku: string): Promise<FullBsaleValidation> {
     const cleanSku = String(originalSku ?? '').trim();
     const fullSku = `FULL${cleanSku}`;
 
@@ -103,6 +103,91 @@ export async function validateFullSku(originalSku: string): Promise<FullBsaleVal
             error: error instanceof Error ? error.message : 'No pudimos validar el SKU en Bsale.',
         };
     }
+}
+
+async function findLatestReceptionCosts(variantIds: number[]) {
+    const pending = new Set(variantIds);
+    const found = new Map<number, { cost: number; date?: string }>();
+    if (pending.size === 0) return found;
+
+    const firstPage = await getJson('https://api.bsale.io/v1/stocks/receptions.json?limit=1');
+    const count = Number(firstPage.count);
+    if (!Number.isFinite(count) || count <= 0) return found;
+
+    const pageSize = 50;
+    const maxReceptionsToInspect = 1000;
+    const minimumOffset = Math.max(0, count - maxReceptionsToInspect);
+
+    for (let offset = Math.max(0, count - pageSize); offset >= minimumOffset && pending.size > 0; offset -= pageSize) {
+        const page = await getJson(
+            `https://api.bsale.io/v1/stocks/receptions.json?limit=${pageSize}&offset=${offset}&expand=[details]`
+        );
+        const receptions = Array.isArray(page.items)
+            ? page.items as Array<Record<string, unknown>>
+            : [];
+
+        for (let receptionIndex = receptions.length - 1; receptionIndex >= 0; receptionIndex -= 1) {
+            const reception = receptions[receptionIndex];
+            const detailsNode = reception.details as Record<string, unknown> | undefined;
+            const details = Array.isArray(detailsNode?.items)
+                ? detailsNode.items as Array<Record<string, unknown>>
+                : [];
+
+            for (let detailIndex = details.length - 1; detailIndex >= 0; detailIndex -= 1) {
+                const detail = details[detailIndex];
+                const variant = detail.variant as Record<string, unknown> | undefined;
+                const variantId = Number(variant?.id);
+                const cost = Number(detail.cost);
+                if (pending.has(variantId) && Number.isFinite(cost) && cost > 0) {
+                    found.set(variantId, {
+                        cost,
+                        date: typeof reception.rawAdmissionDate === 'string'
+                            ? reception.rawAdmissionDate
+                            : undefined,
+                    });
+                    pending.delete(variantId);
+                }
+            }
+        }
+    }
+
+    return found;
+}
+
+export async function validateFullSkus(originalSkus: string[]): Promise<FullBsaleValidation[]> {
+    const cleanSkus = originalSkus.map((sku) => String(sku ?? '').trim());
+    const results = new Array<FullBsaleValidation>(cleanSkus.length);
+    const queue = cleanSkus.map((sku, index) => ({ sku, index }));
+    const workers = Array.from({ length: Math.min(5, queue.length) }, async () => {
+        while (queue.length) {
+            const item = queue.shift();
+            if (!item) return;
+            results[item.index] = await validateFullSkuBase(item.sku);
+        }
+    });
+    await Promise.all(workers);
+
+    const missingCostVariantIds = results
+        .filter((result) => result.originalVariantId && Number(result.averageCost) <= 0)
+        .map((result) => result.originalVariantId as number);
+    const receptionCosts = await findLatestReceptionCosts(missingCostVariantIds);
+
+    return results.map((result) => {
+        if (!result.originalVariantId || Number(result.averageCost) > 0) return result;
+        const receptionCost = receptionCosts.get(result.originalVariantId);
+        if (!receptionCost) return result;
+        return {
+            ...result,
+            averageCost: receptionCost.cost,
+            costSource: 'last_reception',
+            costDate: receptionCost.date,
+            error: undefined,
+        };
+    });
+}
+
+export async function validateFullSku(originalSku: string): Promise<FullBsaleValidation> {
+    return (await validateFullSkus([originalSku]))[0];
 }
 
 export async function submitFullReception(payload: StockReceptionPayload) {
