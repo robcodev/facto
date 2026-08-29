@@ -19,6 +19,8 @@ interface InvoiceProcessResponse {
     invoiceItems?: Array<Pick<UiItem, 'code' | 'quantity' | 'netUnitValue' | 'totalNet'>>;
 }
 
+const MAX_UPLOAD_SIZE_BYTES = 4 * 1024 * 1024;
+
 export default function RecepcionPage() {
     const [loading, setLoading] = useState(false);
     const [offices, setOffices] = useState<BsaleOffice[]>([]);
@@ -46,6 +48,13 @@ export default function RecepcionPage() {
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const fileList = e.target.files;
         if (!fileList || fileList.length === 0) return;
+
+        const totalSize = Array.from(fileList).reduce((total, file) => total + file.size, 0);
+        if (totalSize > MAX_UPLOAD_SIZE_BYTES) {
+            alert('El conjunto de archivos supera el máximo de 4 MB permitido en la versión alojada.');
+            e.target.value = '';
+            return;
+        }
 
         setLoading(true);
         setItems([]);
