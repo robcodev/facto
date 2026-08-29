@@ -215,7 +215,7 @@ export async function submitStockReception(payload: StockReceptionPayload) {
             document: 'FACTURA',
             officeId,
             documentNumber,
-            note: 'Ingreso automatizado mediante Recepción por IA',
+            note: payload.note?.trim() || 'Ingreso automatizado mediante Recepción por IA',
             details,
         };
 

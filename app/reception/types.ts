@@ -8,6 +8,7 @@ export interface StockReceptionPayload {
     officeId: number;
     documentNumber: string;
     details: ReceptionDetail[];
+    note?: string;
 }
 
 export interface BsaleOffice {
