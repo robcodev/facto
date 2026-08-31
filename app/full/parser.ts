@@ -13,7 +13,8 @@ const findHeaderIndex = (headers: Cell[], label: string, occurrence = 0) => {
     return matches[occurrence]?.index ?? -1;
 };
 
-const isDelivered = (status: string) => normalized(status) === 'entregado';
+const INCLUDED_STATUSES = new Set(['entregado', 'en camino', 'en punto de retiro']);
+const isIncludedStatus = (status: string) => INCLUDED_STATUSES.has(normalized(status));
 
 export function parseFullSalesRows(rawRows: Cell[][], sheetName: string): FullReportAnalysis {
     const headerRowIndex = rawRows.findIndex((row) =>
@@ -112,7 +113,7 @@ export function parseFullSalesRows(rawRows: Cell[][], sheetName: string): FullRe
             return;
         }
 
-        if (!isDelivered(status)) {
+        if (!isIncludedStatus(status)) {
             const key = status || 'Estado vacío';
             const current = exclusions.get(key) ?? { status: key, rows: 0, units: 0 };
             current.rows += 1;

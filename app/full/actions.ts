@@ -194,7 +194,7 @@ export async function validateFullSku(originalSku: string): Promise<FullBsaleVal
 export async function submitFullReception(payload: StockReceptionPayload) {
     return submitStockReception({
         ...payload,
-        note: 'Ingreso automatizado de ventas entregadas de Mercado Libre Full',
+        note: 'Ingreso automatizado de ventas incluidas de Mercado Libre Full',
     });
 }
 

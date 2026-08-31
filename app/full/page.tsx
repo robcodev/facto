@@ -268,7 +268,7 @@ export default function FullPage() {
                 <>
                     <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                         <Summary label="Filas del reporte" value={analysis.sourceRows} />
-                        <Summary label="Ventas entregadas" value={analysis.includedRows} />
+                        <Summary label="Ventas incluidas" value={analysis.includedRows} />
                         <Summary label={workflow === 'reception' ? 'Unidades a recibir' : 'Unidades en preventa'} value={analysis.includedUnits} />
                         <Summary label="SKU distintos" value={analysis.items.length} />
                     </section>
@@ -354,7 +354,7 @@ export default function FullPage() {
                     {analysis.exclusions.length > 0 && (
                         <section className="rounded-lg border border-amber-200 bg-amber-50 p-5">
                             <h2 className="font-semibold text-amber-900">Filas no incluidas en esta prueba</h2>
-                            <p className="mt-1 text-sm text-amber-800">Por seguridad, el MVP incluye únicamente ventas con estado “Entregado”.</p>
+                            <p className="mt-1 text-sm text-amber-800">Se incluyen ventas con estado “Entregado”, “En camino” y “En punto de retiro”.</p>
                             <div className="mt-3 flex flex-wrap gap-2">{analysis.exclusions.map((entry) => <span key={entry.status} className="rounded-full bg-white px-3 py-1 text-xs text-amber-900 ring-1 ring-amber-200">{entry.status}: {entry.rows} filas / {entry.units} unidades</span>)}</div>
                         </section>
                     )}
