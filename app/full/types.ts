@@ -4,6 +4,8 @@ export type FullReportItem = {
     quantity: number;
     title: string;
     saleCount: number;
+    finalAmountWithTax: number;
+    presaleNetUnitValue: number;
 };
 
 export type FullReportExclusion = {
@@ -18,6 +20,8 @@ export type FullReportAnalysis = {
     includedRows: number;
     includedUnits: number;
     combinedPurchaseRows: number;
+    totalReceivedWithTax: number;
+    combinedAllocatedWithTax: number;
     items: FullReportItem[];
     exclusions: FullReportExclusion[];
 };
@@ -35,4 +39,14 @@ export type FullBsaleValidation = {
     costSource: 'last_reception' | 'average' | 'missing' | 'manual';
     costDate?: string;
     error?: string;
+};
+
+export type FullPresalePayload = {
+    officeId: number;
+    priceListId?: number;
+    details: Array<{
+        code: string;
+        quantity: number;
+        netUnitValue: number;
+    }>;
 };

@@ -2,9 +2,10 @@
 
 import { submitStockReception } from '@/app/reception/actions';
 import type { StockReceptionPayload } from '@/app/reception/types';
-import type { FullBsaleValidation } from './types';
+import type { FullBsaleValidation, FullPresalePayload } from './types';
 
 const BSALE_TOKEN = process.env.BSALE_TOKEN;
+const FULL_CLIENT_CODE = '77398220-1';
 
 const getBsaleHeaders = () => {
     if (!BSALE_TOKEN) throw new Error('Falta configurar la variable de entorno BSALE_TOKEN');
@@ -195,4 +196,67 @@ export async function submitFullReception(payload: StockReceptionPayload) {
         ...payload,
         note: 'Ingreso automatizado de ventas entregadas de Mercado Libre Full',
     });
+}
+
+export async function submitFullPresale(payload: FullPresalePayload) {
+    try {
+        const officeId = Number(payload.officeId);
+        const priceListId = payload.priceListId == null ? undefined : Number(payload.priceListId);
+        if (!Number.isInteger(officeId) || officeId <= 0) throw new Error('Sucursal inválida.');
+        if (priceListId !== undefined && (!Number.isInteger(priceListId) || priceListId <= 0)) throw new Error('Lista de precios inválida.');
+        if (!Array.isArray(payload.details) || payload.details.length === 0) throw new Error('La preventa no contiene productos.');
+
+        const clientsData = await getJson(`https://api.bsale.io/v1/clients.json?code=${encodeURIComponent(FULL_CLIENT_CODE)}&state=0&limit=50`);
+        const clients = Array.isArray(clientsData.items) ? clientsData.items as Array<Record<string, unknown>> : [];
+        const normalizeCode = (value: unknown) => String(value ?? '').replace(/[^0-9kK]/g, '').toUpperCase();
+        const client = clients.find((item) => normalizeCode(item.code) === normalizeCode(FULL_CLIENT_CODE));
+        const clientId = Number(client?.id);
+        if (!Number.isInteger(clientId) || clientId <= 0) {
+            throw new Error(`No encontramos activo en Bsale al cliente ${FULL_CLIENT_CODE} — Mercado Libre S.A. (Full).`);
+        }
+
+        const details = payload.details.map((item, index) => {
+            const code = String(item.code ?? '').trim();
+            const quantity = Number(item.quantity);
+            const netUnitValue = Number(item.netUnitValue);
+            if (!code) throw new Error(`Línea ${index + 1}: SKU vacío.`);
+            if (!Number.isInteger(quantity) || quantity <= 0) throw new Error(`Línea ${index + 1} (${code}): cantidad inválida.`);
+            if (!Number.isFinite(netUnitValue) || netUnitValue <= 0) throw new Error(`Línea ${index + 1} (${code}): precio neto pendiente.`);
+            return { code, quantity, netUnitValue, discount: 0 };
+        });
+        if (new Set(details.map((item) => item.code.toLocaleUpperCase('es-CL'))).size !== details.length) {
+            throw new Error('La preventa contiene un SKU repetido. Cada producto debe enviarse una sola vez con su cantidad total.');
+        }
+
+        const now = new Date();
+        const date = Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 1000);
+        const bsalePayload = {
+            documentTypeId: 38,
+            officeId,
+            ...(priceListId ? { priceListId } : {}),
+            emissionDate: date,
+            expirationDate: date,
+            declareSii: 0,
+            dispatch: 0,
+            observation: 'Preventa generada desde recepción Mercado Libre Full',
+            clientId,
+            details,
+        };
+
+        const response = await fetch('https://api.bsale.io/v1/documents.json', {
+            method: 'POST', headers: getBsaleHeaders(), body: JSON.stringify(bsalePayload), cache: 'no-store',
+        });
+        const text = await response.text();
+        let result: Record<string, unknown> = {};
+        try { result = text ? JSON.parse(text) as Record<string, unknown> : {}; } catch { result = { raw: text }; }
+        if (!response.ok) throw new Error(String(result.description ?? result.message ?? result.error ?? result.raw ?? response.statusText));
+        return {
+            success: true as const,
+            documentId: Number(result.id) || null,
+            documentNumber: Number(result.number) || null,
+            url: typeof result.urlPublicView === 'string' ? result.urlPublicView : null,
+        };
+    } catch (error) {
+        return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos crear la preventa.' };
+    }
 }
