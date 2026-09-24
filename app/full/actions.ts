@@ -106,6 +106,59 @@ async function validateFullSkuBase(originalSku: string): Promise<FullBsaleValida
     }
 }
 
+async function validateFullProductBase(originalSku: string): Promise<FullBsaleValidation> {
+    const cleanSku = String(originalSku ?? '').trim();
+    const fullSku = `FULL${cleanSku}`;
+    try {
+        if (!cleanSku) throw new Error('SKU original vacío.');
+        const [original, full] = await Promise.all([findVariant(cleanSku), findVariant(fullSku)]);
+        return {
+            originalSku: cleanSku,
+            fullSku,
+            originalExists: Boolean(original),
+            fullExists: Boolean(full),
+            originalName: original?.name ?? null,
+            fullName: full?.name ?? null,
+            originalVariantId: original?.id ?? null,
+            fullVariantId: full?.id ?? null,
+            averageCost: null,
+            costSource: 'missing',
+        };
+    } catch (error) {
+        return {
+            originalSku: cleanSku,
+            fullSku,
+            originalExists: false,
+            fullExists: false,
+            originalName: null,
+            fullName: null,
+            originalVariantId: null,
+            fullVariantId: null,
+            averageCost: null,
+            costSource: 'missing',
+            error: error instanceof Error ? error.message : 'No pudimos validar el SKU en Bsale.',
+        };
+    }
+}
+
+export async function validateFullProducts(originalSkus: string[]): Promise<FullBsaleValidation[]> {
+    const queue = originalSkus.map((sku, index) => ({ sku: String(sku ?? '').trim(), index }));
+    const results = new Array<FullBsaleValidation>(queue.length);
+    const workers = Array.from({ length: Math.min(5, queue.length) }, async () => {
+        while (queue.length) {
+            const item = queue.shift();
+            if (!item) return;
+            results[item.index] = await validateFullProductBase(item.sku);
+        }
+    });
+    await Promise.all(workers);
+    return results;
+}
+
+export async function validateFullProduct(originalSku: string): Promise<FullBsaleValidation> {
+    return (await validateFullProducts([originalSku]))[0];
+}
+
 async function findLatestReceptionCosts(variantIds: number[]) {
     const pending = new Set(variantIds);
     const found = new Map<number, { cost: number; date?: string }>();
@@ -249,6 +302,13 @@ export async function submitFullPresale(payload: FullPresalePayload) {
         const text = await response.text();
         let result: Record<string, unknown> = {};
         try { result = text ? JSON.parse(text) as Record<string, unknown> : {}; } catch { result = { raw: text }; }
+        console.info('Bsale preventa response', {
+            status: response.status,
+            ok: response.ok,
+            documentId: result.id ?? null,
+            documentNumber: result.number ?? null,
+            error: result.description ?? result.message ?? result.error ?? result.raw ?? null,
+        });
         if (!response.ok) throw new Error(String(result.description ?? result.message ?? result.error ?? result.raw ?? response.statusText));
         return {
             success: true as const,

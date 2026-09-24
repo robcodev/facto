@@ -27,6 +27,7 @@ export default function RecepcionPage() {
     const [selectedOffice, setSelectedOffice] = useState<string>('');
     const [documentNumber, setDocumentNumber] = useState<string>('');
     const [items, setItems] = useState<UiItem[]>([]);
+    const [processError, setProcessError] = useState<string | null>(null);
 
     // Estados para los descuentos globales en cascada
     const [discount1, setDiscount1] = useState<number>(0);
@@ -57,6 +58,7 @@ export default function RecepcionPage() {
         }
 
         setLoading(true);
+        setProcessError(null);
         setItems([]);
         setDiscount1(0);
         setDiscount2(0);
@@ -114,7 +116,7 @@ export default function RecepcionPage() {
                 );
             }
         } catch (error) {
-            alert(error instanceof Error ? error.message : 'Ocurrió un error.');
+            setProcessError(error instanceof Error ? error.message : 'Ocurrió un error procesando la factura.');
         } finally {
             setLoading(false);
         }
@@ -229,6 +231,7 @@ export default function RecepcionPage() {
                     />
                     {loading && <span className="text-sm text-blue-600 animate-pulse font-medium">Procesando...</span>}
                 </div>
+                {processError && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{processError}</div>}
             </section>
 
             {/* PASO 2: Tabla de Ítems */}

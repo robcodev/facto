@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getBsaleOffices } from '@/app/reception/actions';
 import type { BsaleOffice } from '@/app/reception/types';
-import { submitFullPresale, submitFullReception, validateFullSku, validateFullSkus } from './actions';
+import { submitFullPresale, submitFullReception, validateFullProduct, validateFullProducts, validateFullSku, validateFullSkus } from './actions';
 import type { FullBsaleValidation, FullReportAnalysis } from './types';
 
 type ValidationMap = Record<string, FullBsaleValidation>;
@@ -31,6 +31,7 @@ export default function FullPage() {
     const [presalePrices, setPresalePrices] = useState<Record<string, number>>({});
     const [creatingPresale, setCreatingPresale] = useState(false);
     const [presaleResult, setPresaleResult] = useState<{ number: number | null; url: string | null } | null>(null);
+    const [presaleMessage, setPresaleMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
     const [message, setMessage] = useState<string | null>(null);
 
     useEffect(() => {
@@ -62,6 +63,7 @@ export default function FullPage() {
         setEditedSkus({});
         setReceptionId(null);
         setPresaleResult(null);
+        setPresaleMessage(null);
         setPresalePrices({});
         setMessage(null);
     };
@@ -75,6 +77,13 @@ export default function FullPage() {
         return sum + (presalePrices[sku] ?? 0) * item.quantity * 1.19;
     }, 0) ?? 0;
     const presaleDifference = presaleCalculatedWithTax - (analysis?.totalReceivedWithTax ?? 0);
+    const pendingPresalePriceSkus = analysis?.items
+        .filter((item) => {
+            const currentFullSku = `FULL${(editedSkus[item.originalSku] ?? item.originalSku).trim()}`;
+            return !Number.isFinite(presalePrices[currentFullSku]) || presalePrices[currentFullSku] <= 0;
+        })
+        .map((item) => `FULL${(editedSkus[item.originalSku] ?? item.originalSku).trim()}`) ?? [];
+    const presalePricesComplete = Boolean(analysis && pendingPresalePriceSkus.length === 0);
 
     const handleFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
@@ -88,6 +97,7 @@ export default function FullPage() {
         setReceptionId(null);
         setPresalePrices({});
         setPresaleResult(null);
+        setPresaleMessage(null);
 
         try {
             const formData = new FormData();
@@ -100,7 +110,7 @@ export default function FullPage() {
             setDocumentNumber(new Date().toISOString().slice(0, 7).replace('-', ''));
             if (workflow === 'presale') {
                 setValidating(true);
-                const validationResults = await validateFullSkus(result.items.map((item) => item.originalSku));
+                const validationResults = await validateFullProducts(result.items.map((item) => item.originalSku));
                 setValidations(Object.fromEntries(result.items.map((item, index) => [item.originalSku, validationResults[index]])));
             }
         } catch (error) {
@@ -151,7 +161,9 @@ export default function FullPage() {
 
         setMessage(null);
         setValidatingRows((current) => ({ ...current, [reportSku]: true }));
-        const validation = await validateFullSku(currentSku);
+        const validation = workflow === 'presale'
+            ? await validateFullProduct(currentSku)
+            : await validateFullSku(currentSku);
         setValidations((current) => ({ ...current, [reportSku]: validation }));
         setValidatingRows((current) => {
             const next = { ...current };
@@ -232,13 +244,20 @@ export default function FullPage() {
 
         setCreatingPresale(true);
         setMessage(null);
+        setPresaleMessage(null);
         const result = await submitFullPresale({
             officeId: Number(selectedOffice),
             details,
         });
         setCreatingPresale(false);
-        if (!result.success) return setMessage(result.error ?? 'Bsale rechazó la preventa.');
+        if (!result.success) {
+            const error = result.error ?? 'Bsale rechazó la preventa.';
+            setMessage(error);
+            setPresaleMessage({ type: 'error', text: error });
+            return;
+        }
         setPresaleResult({ number: result.documentNumber, url: result.url });
+        setPresaleMessage({ type: 'success', text: `Preventa creada correctamente. Número: ${result.documentNumber ?? 'sin número'}` });
         setMessage(`Preventa creada correctamente. Número: ${result.documentNumber ?? 'sin número'}`);
     };
 
@@ -404,7 +423,9 @@ export default function FullPage() {
                                 <div className={`rounded-md p-3 ${Math.abs(presaleDifference) <= 0.01 ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}><p className="text-xs uppercase">Diferencia</p><p className="font-semibold">{formatClpDetailed(presaleDifference)}</p></div>
                             </div>}
 
-                            {presaleResult ? <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-800">Preventa {presaleResult.number ?? 'creada'} lista.{presaleResult.url && <> <a href={presaleResult.url} target="_blank" rel="noreferrer" className="font-semibold underline">Abrir en Bsale</a></>}</div> : <button type="button" onClick={handleCreatePresale} disabled={!productsValidated || creatingPresale || !selectedOffice || Math.abs(presaleDifference) > 0.01 || Object.keys(presalePrices).length !== analysis.items.length || Object.values(presalePrices).some((price) => price <= 0)} className="rounded-md bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">{creatingPresale ? 'Creando preventa…' : 'Crear preventa final'}</button>}
+                            {!presaleResult && (!productsValidated || !selectedOffice || Math.abs(presaleDifference) > 0.01 || !presalePricesComplete) && <div className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">Falta para confirmar: {[!productsValidated && 'validar todos los SKU FULL', !selectedOffice && 'seleccionar una sucursal', !presalePricesComplete && `corregir precios pendientes (${pendingPresalePriceSkus.join(', ')})`, Math.abs(presaleDifference) > 0.01 && 'dejar la diferencia total en $0'].filter(Boolean).join(' · ')}.</div>}
+                            {presaleMessage && <div className={`rounded-md px-4 py-3 text-sm ${presaleMessage.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>{presaleMessage.text}</div>}
+                            {presaleResult ? <div className="rounded-md bg-green-50 px-4 py-3 text-sm text-green-800">Preventa {presaleResult.number ?? 'creada'} lista.{presaleResult.url && <> <a href={presaleResult.url} target="_blank" rel="noreferrer" className="font-semibold underline">Abrir en Bsale</a></>}</div> : <button type="button" onClick={handleCreatePresale} disabled={!productsValidated || creatingPresale || !selectedOffice || Math.abs(presaleDifference) > 0.01 || !presalePricesComplete} className="rounded-md bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">{creatingPresale ? 'Creando preventa…' : 'Crear preventa final'}</button>}
                         </section>
                     )}
                     </div>
