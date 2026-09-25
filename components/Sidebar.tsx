@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 const navigation = [
     { href: '/reception', label: 'Recepción de Stock' },
     { href: '/full', label: 'Mercado Libre Full' },
+    { href: '/prices', label: 'Precios por lotes' },
     { href: '/labels', label: 'Etiquetas ZPL' },
 ];
 
