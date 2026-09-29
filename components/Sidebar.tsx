@@ -2,16 +2,20 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { logout } from '@/app/auth/actions';
 
 const navigation = [
     { href: '/reception', label: 'Recepción de Stock' },
     { href: '/full', label: 'Mercado Libre Full' },
     { href: '/prices', label: 'Precios por lotes' },
+    { href: '/picking', label: 'Picking pedidos web' },
     { href: '/labels', label: 'Etiquetas ZPL' },
 ];
 
 export default function Sidebar() {
     const pathname = usePathname();
+
+    if (pathname === '/login' || pathname === '/register' || pathname.startsWith('/auth/') || pathname === '/set-password') return null;
 
     return (
         <aside className="border-b border-gray-200 bg-white md:fixed md:inset-y-0 md:left-0 md:w-64 md:border-b-0 md:border-r">
@@ -41,6 +45,11 @@ export default function Sidebar() {
                         );
                     })}
                 </nav>
+                <form action={logout} className="mt-auto hidden pt-6 md:block">
+                    <button type="submit" className="w-full rounded-md px-3 py-2.5 text-left text-sm font-medium text-gray-500 transition hover:bg-gray-100 hover:text-gray-900">
+                        Cerrar sesión
+                    </button>
+                </form>
             </div>
         </aside>
     );

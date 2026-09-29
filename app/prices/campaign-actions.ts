@@ -17,6 +17,8 @@ export type CampaignItemInput = {
     productName: string;
     variantName: string;
     discount: number;
+    createdAt?: string;
+    isNew?: boolean;
 };
 
 export type CampaignStoredItem = CampaignItemInput & { id: number };
@@ -135,7 +137,7 @@ export async function saveCampaignItems(listId: number, items: CampaignItemInput
             if (failed?.error) throw new Error(failed.error.message);
         }
         await supabase.from('campaign_lists').update({ updated_by: null }).eq('id', listId);
-        return { success: true as const, saved: rows.length };
+        return { success: true as const, saved: rows.length, insertedVariantIds: inserts.map((row) => row.bsale_variant_id) };
     } catch (error) {
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos guardar los productos.' };
     }
@@ -147,7 +149,7 @@ export async function loadCampaignItems(listId: number) {
         const { data: list, error: listError } = await supabase.from('campaign_lists').select('id').eq('id', listId).eq('organization_id', organizationId).maybeSingle();
         if (listError) throw new Error(listError.message);
         if (!list) throw new Error('La lista no existe o no pertenece a tu empresa.');
-        const { data, error } = await supabase.from('campaign_items').select('id, bsale_variant_id, bsale_product_id, sku, product_name, variant_name, discount_override').eq('campaign_list_id', listId).order('product_name');
+        const { data, error } = await supabase.from('campaign_items').select('id, bsale_variant_id, bsale_product_id, sku, product_name, variant_name, discount_override, created_at').eq('campaign_list_id', listId).order('product_name');
         if (error) throw new Error(error.message);
         const items: CampaignStoredItem[] = (data ?? []).map((row) => ({
             id: Number(row.id),
@@ -157,6 +159,7 @@ export async function loadCampaignItems(listId: number) {
             productName: String(row.product_name),
             variantName: String(row.variant_name ?? ''),
             discount: Number(row.discount_override ?? 0),
+            createdAt: String(row.created_at),
         }));
         return { success: true as const, items };
     } catch (error) {
