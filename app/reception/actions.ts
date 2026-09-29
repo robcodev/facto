@@ -34,6 +34,8 @@ export async function checkSkuInBsale(sku: string) {
                 exists: false,
                 variantId: null,
                 name: null,
+                active: false,
+                state: null,
                 error: 'SKU vacío',
             };
         }
@@ -79,6 +81,8 @@ export async function checkSkuInBsale(sku: string) {
                 exists: true,
                 variantId: variant.id,
                 name: variant.description ?? null,
+                active: Number(variant.state) === 0,
+                state: Number(variant.state),
             };
         }
 
@@ -86,6 +90,8 @@ export async function checkSkuInBsale(sku: string) {
             exists: false,
             variantId: null,
             name: null,
+            active: false,
+            state: null,
         };
     } catch (error: any) {
         console.error(
@@ -97,6 +103,8 @@ export async function checkSkuInBsale(sku: string) {
             exists: false,
             variantId: null,
             name: null,
+            active: false,
+            state: null,
             error:
                 error?.message ||
                 'Error interno al validar SKU en Bsale',
@@ -210,6 +218,16 @@ export async function submitStockReception(payload: StockReceptionPayload) {
                 };
             }
         );
+
+        const variantChecks = await Promise.all(details.map((detail) => checkSkuInBsale(detail.code)));
+        variantChecks.forEach((variant, index) => {
+            if (!variant.exists) {
+                throw new Error(`Detalle ${index + 1} (${details[index].code}): la variante no existe en Bsale.`);
+            }
+            if (!variant.active) {
+                throw new Error(`Detalle ${index + 1} (${details[index].code}): la variante está desactivada en Bsale.`);
+            }
+        });
 
         const bsalePayload = {
             document: 'FACTURA',

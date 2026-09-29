@@ -12,12 +12,19 @@ interface UiItem {
     exists: boolean | null;
     variantId: number | null;
     bsaleName: string | null;
+    variantActive: boolean | null;
 }
 
 interface InvoiceProcessResponse {
     documentNumber?: string;
     invoiceItems?: Array<Pick<UiItem, 'code' | 'quantity' | 'netUnitValue' | 'totalNet'>>;
 }
+
+type InvoiceDiscount = {
+    id: number;
+    type: 'percentage' | 'amount';
+    value: number;
+};
 
 const MAX_UPLOAD_SIZE_BYTES = 4 * 1024 * 1024;
 
@@ -29,9 +36,9 @@ export default function RecepcionPage() {
     const [items, setItems] = useState<UiItem[]>([]);
     const [processError, setProcessError] = useState<string | null>(null);
 
-    // Estados para los descuentos globales en cascada
-    const [discount1, setDiscount1] = useState<number>(0);
-    const [discount2, setDiscount2] = useState<number>(0);
+    const [discounts, setDiscounts] = useState<InvoiceDiscount[]>([
+        { id: 1, type: 'percentage', value: 0 },
+    ]);
 
     useEffect(() => {
         async function fetchOffices() {
@@ -40,11 +47,6 @@ export default function RecepcionPage() {
         }
         fetchOffices();
     }, []);
-
-    // Factor dinámico compuesto de descuento (Ej: 7% y 10% -> 0.93 * 0.90 = 0.837)
-    const factorDiscount1 = 1 - (discount1 / 100);
-    const factorDiscount2 = 1 - (discount2 / 100);
-    const compositeDiscountFactor = factorDiscount1 * factorDiscount2;
 
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const fileList = e.target.files;
@@ -60,8 +62,7 @@ export default function RecepcionPage() {
         setLoading(true);
         setProcessError(null);
         setItems([]);
-        setDiscount1(0);
-        setDiscount2(0);
+        setDiscounts([{ id: 1, type: 'percentage', value: 0 }]);
 
         const formData = new FormData();
         Array.from(fileList).forEach((file) => {
@@ -92,7 +93,8 @@ export default function RecepcionPage() {
                     ...item,
                     exists: null,
                     variantId: null,
-                    bsaleName: 'Validando con Bsale...'
+                    bsaleName: 'Validando con Bsale...',
+                    variantActive: null,
                 }));
                 setItems(initialItems);
 
@@ -106,9 +108,11 @@ export default function RecepcionPage() {
                                 updated[index].exists = true;
                                 updated[index].variantId = validation.variantId ?? null;
                                 updated[index].bsaleName = validation.name ?? 'Encontrado';
+                                updated[index].variantActive = validation.active;
                             } else {
                                 updated[index].exists = false;
                                 updated[index].bsaleName = 'Producto No Existe';
+                                updated[index].variantActive = null;
                             }
                             return updated;
                         });
@@ -130,6 +134,7 @@ export default function RecepcionPage() {
             updated[index].code = newSku;
             updated[index].exists = null;
             updated[index].bsaleName = 'Validando corrección...';
+            updated[index].variantActive = null;
             return updated;
         });
 
@@ -142,10 +147,12 @@ export default function RecepcionPage() {
                     updated[index].exists = true;
                     updated[index].variantId = validation.variantId ?? null;
                     updated[index].bsaleName = validation.name ?? 'Encontrado';
+                    updated[index].variantActive = validation.active;
                 } else {
                     updated[index].exists = false;
                     updated[index].variantId = null;
                     updated[index].bsaleName = 'Producto No Existe';
+                    updated[index].variantActive = null;
                 }
             }
             return updated;
@@ -170,12 +177,33 @@ export default function RecepcionPage() {
         });
     };
 
-    const handleRemoveItem = (index: number) => {
-        setItems(prev => prev.filter((_, i) => i !== index));
+    const invoiceSubtotalNet = items.reduce((acc, item) => acc + item.totalNet, 0);
+    const invoiceTotalNetFinal = Math.round(discounts.reduce((currentTotal, discount) => {
+        const value = Math.max(0, Number(discount.value) || 0);
+        if (discount.type === 'percentage') {
+            return currentTotal * (1 - Math.min(100, value) / 100);
+        }
+        return Math.max(0, currentTotal - value);
+    }, invoiceSubtotalNet));
+    const compositeDiscountFactor = invoiceSubtotalNet > 0 ? invoiceTotalNetFinal / invoiceSubtotalNet : 1;
+    const appliedDiscount = Math.max(0, invoiceSubtotalNet - invoiceTotalNetFinal);
+
+    const addDiscount = () => {
+        setDiscounts(current => [
+            ...current,
+            { id: Math.max(0, ...current.map(discount => discount.id)) + 1, type: 'percentage', value: 0 },
+        ]);
     };
 
-    const invoiceSubtotalNet = items.reduce((acc, item) => acc + item.totalNet, 0);
-    const invoiceTotalNetFinal = Math.round(invoiceSubtotalNet * compositeDiscountFactor);
+    const updateDiscount = (id: number, changes: Partial<Pick<InvoiceDiscount, 'type' | 'value'>>) => {
+        setDiscounts(current => current.map(discount => discount.id === id ? { ...discount, ...changes } : discount));
+    };
+
+    const removeDiscount = (id: number) => {
+        setDiscounts(current => current.length === 1
+            ? [{ id: 1, type: 'percentage', value: 0 }]
+            : current.filter(discount => discount.id !== id));
+    };
 
     const handleFinalSubmit = async () => {
         if (!selectedOffice) return alert('Debes seleccionar una sucursal.');
@@ -200,14 +228,13 @@ export default function RecepcionPage() {
             alert(`¡Recepción de Stock creada exitosamente en Bsale! ID: ${res.receptionId}`);
             setItems([]);
             setDocumentNumber('');
-            setDiscount1(0);
-            setDiscount2(0);
+            setDiscounts([{ id: 1, type: 'percentage', value: 0 }]);
         } else {
             alert(`Error al guardar la recepción: ${res.error}`);
         }
     };
 
-    const allSkusResolved = items.length > 0 && items.every(item => item.exists === true && item.code.trim() !== '');
+    const allSkusResolved = items.length > 0 && items.every(item => item.exists === true && item.variantActive === true && item.code.trim() !== '');
 
     return (
         <div className="max-w-5xl mx-auto p-6 space-y-8">
@@ -252,7 +279,7 @@ export default function RecepcionPage() {
                             <th className="p-4 text-blue-700">Costo Real Prorrateado</th>
                             <th className="p-4">Total Línea (Lista)</th>
                             <th className="p-4">Estado Bsale</th>
-                            <th className="p-4 text-right">Acción</th>
+                            <th className="p-4 text-center">Estado</th>
                         </tr>
                         </thead>
                         <tbody className="divide-y text-sm text-gray-600">
@@ -318,15 +345,11 @@ export default function RecepcionPage() {
                                         {item.code !== '' && item.exists === true && <span className="text-green-600 font-medium">✓ {item.bsaleName}</span>}
                                         {item.code !== '' && item.exists === false && <span className="text-red-500 font-medium">✗ No existe</span>}
                                     </td>
-                                    <td className="p-4 text-right space-x-2">
-                                        <button
-                                            onClick={() => handleRemoveItem(index)}
-                                            disabled={loading}
-                                            className="text-xs text-gray-400 hover:text-red-500 font-medium p-1 disabled:cursor-not-allowed disabled:opacity-40"
-                                            title="Eliminar fila"
-                                        >
-                                            ✕
-                                        </button>
+                                    <td className="p-4 text-center">
+                                        {item.exists === null && <span className="inline-flex items-center gap-2 text-gray-500"><span className="h-2.5 w-2.5 rounded-full bg-gray-300" />Validando</span>}
+                                        {item.exists === false && <span className="inline-flex items-center gap-2 font-medium text-red-600"><span className="h-2.5 w-2.5 rounded-full bg-red-500" />No disponible</span>}
+                                        {item.exists === true && item.variantActive === true && <span title="Variante activa" aria-label="Variante activa" className="inline-block h-3 w-3 rounded-full bg-green-500" />}
+                                        {item.exists === true && item.variantActive === false && <span title="Variante desactivada" aria-label="Variante desactivada" className="inline-block h-3 w-3 rounded-full bg-red-500" />}
                                     </td>
                                 </tr>
                             );
@@ -335,34 +358,36 @@ export default function RecepcionPage() {
                     </table>
 
                     <div className="p-6 bg-gray-50 border-t flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                        <div className="flex flex-wrap gap-4 items-center bg-white p-3 border rounded-md shadow-sm">
-                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Descuentos Factura:</span>
-                            <div className="flex items-center space-x-1">
-                                <label className="text-xs text-gray-600">Desc 1:</label>
-                                <input
-                                    type="number"
-                                    min="0"
-                                    max="100"
-                                    value={discount1}
-                                    onChange={(e) => setDiscount1(Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
-                                    className="w-14 px-1 py-0.5 border rounded text-center text-sm font-medium focus:ring-2 focus:ring-blue-500"
-                                    placeholder="0"
-                                />
-                                <span className="text-sm text-gray-500">%</span>
+                        <div className="space-y-3 rounded-md border bg-white p-3 shadow-sm">
+                            <div className="flex items-center justify-between gap-4">
+                                <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Descuentos factura</span>
+                                <button type="button" onClick={addDiscount} className="rounded-md border border-blue-200 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-50">+ Agregar descuento</button>
                             </div>
-                            <div className="flex items-center space-x-1">
-                                <label className="text-xs text-gray-600">Desc 2:</label>
-                                <input
-                                    type="number"
-                                    min="0"
-                                    max="100"
-                                    value={discount2}
-                                    onChange={(e) => setDiscount2(Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
-                                    className="w-14 px-1 py-0.5 border rounded text-center text-sm font-medium focus:ring-2 focus:ring-blue-500"
-                                    placeholder="0"
-                                />
-                                <span className="text-sm text-gray-500">%</span>
+                            <div className="space-y-2">
+                                {discounts.map((discount, index) => <div key={discount.id} className="flex flex-wrap items-center gap-2">
+                                    <span className="w-14 text-xs text-gray-500">Desc {index + 1}</span>
+                                    <select value={discount.type} onChange={(event) => { const type = event.target.value as InvoiceDiscount['type']; updateDiscount(discount.id, { type, value: type === 'percentage' ? Math.min(100, discount.value) : discount.value }); }} className="rounded border bg-white px-2 py-1.5 text-sm">
+                                        <option value="percentage">Porcentaje</option>
+                                        <option value="amount">Monto</option>
+                                    </select>
+                                    <div className="flex overflow-hidden rounded border bg-white focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500">
+                                        {discount.type === 'amount' && <span className="border-r bg-gray-50 px-2 py-1.5 text-sm text-gray-500">$</span>}
+                                        <input
+                                            aria-label={`Valor descuento ${index + 1}`}
+                                            type="number"
+                                            min="0"
+                                            max={discount.type === 'percentage' ? 100 : undefined}
+                                            value={discount.value}
+                                            onFocus={(event) => event.currentTarget.select()}
+                                            onChange={(event) => { const value = Math.max(0, Number(event.target.value) || 0); updateDiscount(discount.id, { value: discount.type === 'percentage' ? Math.min(100, value) : value }); }}
+                                            className="w-24 px-2 py-1.5 text-right text-sm font-medium outline-none"
+                                        />
+                                        {discount.type === 'percentage' && <span className="border-l bg-gray-50 px-2 py-1.5 text-sm text-gray-500">%</span>}
+                                    </div>
+                                    <button type="button" onClick={() => removeDiscount(discount.id)} aria-label={`Quitar descuento ${index + 1}`} title="Quitar descuento" className="px-1.5 text-gray-400 hover:text-red-600">×</button>
+                                </div>)}
                             </div>
+                            <p className="text-xs text-gray-500">Se aplican en orden sobre el saldo restante.</p>
                         </div>
 
                         <div className="text-right space-y-1 font-medium text-sm text-gray-600 w-full md:w-auto">
@@ -370,10 +395,10 @@ export default function RecepcionPage() {
                                 <span>Subtotal Neto:</span>
                                 <span className="font-mono">${invoiceSubtotalNet.toLocaleString('es-CL')}</span>
                             </div>
-                            {(discount1 > 0 || discount2 > 0) && (
+                            {appliedDiscount > 0 && (
                                 <div className="flex justify-between md:justify-end gap-8 text-amber-600 text-xs">
                                     <span>Descuento aplicado en cascada:</span>
-                                    <span className="font-mono">-${(invoiceSubtotalNet - invoiceTotalNetFinal).toLocaleString('es-CL')}</span>
+                                    <span className="font-mono">-${appliedDiscount.toLocaleString('es-CL')}</span>
                                 </div>
                             )}
                             <div className="flex justify-between md:justify-end gap-8 border-t pt-1 font-bold text-gray-800 text-base">
