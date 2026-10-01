@@ -1,6 +1,13 @@
 'use server';
 
 import { createAdminClient } from '@/lib/supabase/admin';
+import { createClient } from '@/lib/supabase/server';
+
+async function requireUser() {
+    const authClient = await createClient();
+    const { data: { user }, error } = await authClient.auth.getUser();
+    if (error || !user) throw new Error('Debes iniciar sesión para realizar esta acción.');
+}
 
 export async function getPickingDashboard() {
     try {
@@ -44,5 +51,67 @@ export async function scanPickingProduct(orderId: number, code: string) {
         return { success: true as const, result: data as { status: string; itemId?: number; pickedQuantity?: number; quantity?: number; completed?: boolean } };
     } catch (error) {
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos validar el producto.' };
+    }
+}
+
+export async function reprintPickingOrder(orderId: number) {
+    try {
+        await requireUser();
+        if (!Number.isInteger(orderId) || orderId <= 0) throw new Error('Pedido inválido.');
+
+        const supabase = createAdminClient();
+        const { data: organization, error: organizationError } = await supabase
+            .from('organizations')
+            .select('id')
+            .eq('slug', 'facto-compartido')
+            .single();
+        if (organizationError) throw new Error(organizationError.message);
+
+        const { data: order, error: orderError } = await supabase
+            .from('web_orders')
+            .select('id')
+            .eq('id', orderId)
+            .eq('organization_id', organization.id)
+            .maybeSingle();
+        if (orderError) throw new Error(orderError.message);
+        if (!order) throw new Error('No encontramos ese pedido.');
+
+        const { data: job, error: jobError } = await supabase
+            .from('print_jobs')
+            .select('id,status')
+            .eq('order_id', orderId)
+            .eq('organization_id', organization.id)
+            .maybeSingle();
+        if (jobError) throw new Error(jobError.message);
+        if (job?.status === 'pending') throw new Error('La preventa ya está esperando al agente.');
+        if (job?.status === 'processing') throw new Error('La preventa ya fue enviada al agente.');
+
+        if (job) {
+            const { error } = await supabase
+                .from('print_jobs')
+                .update({
+                    status: 'pending',
+                    attempts: 0,
+                    locked_by: null,
+                    locked_at: null,
+                    printed_at: null,
+                    last_error: null,
+                    updated_at: new Date().toISOString(),
+                })
+                .eq('id', job.id)
+                .in('status', ['printed', 'failed']);
+            if (error) throw new Error(error.message);
+        } else {
+            const { error } = await supabase.from('print_jobs').insert({
+                organization_id: organization.id,
+                order_id: orderId,
+                status: 'pending',
+            });
+            if (error) throw new Error(error.message);
+        }
+
+        return { success: true as const };
+    } catch (error) {
+        return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos solicitar la reimpresión.' };
     }
 }
