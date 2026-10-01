@@ -14,6 +14,13 @@ const BSALE_TOKEN = process.env.BSALE_TOKEN;
 const BSALE_API = 'https://api.bsale.io/v1';
 const PAGE_SIZE = 50;
 const IVA_FACTOR = 1.19;
+const UPDATE_WORKERS = 2;
+const UPDATE_DELAY_MS = 300;
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+function wait(milliseconds: number) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
 function getHeaders() {
     if (!BSALE_TOKEN) throw new Error('Falta configurar la variable de entorno BSALE_TOKEN.');
@@ -259,22 +266,34 @@ export async function updatePrices(editableListId: number, updates: PriceUpdateI
 
     const results = new Array<PriceUpdateResult>(normalized.length);
     const queue = normalized.map((item, index) => ({ item, index }));
-    const workers = Array.from({ length: Math.min(5, queue.length) }, async () => {
+    const workers = Array.from({ length: Math.min(UPDATE_WORKERS, queue.length) }, async () => {
         while (queue.length > 0) {
             const entry = queue.shift();
             if (!entry) return;
             const { item, index } = entry;
             try {
-                const response = await fetch(`${BSALE_API}/price_lists/${editableListId}/details/${item.detailId}.json`, {
-                    method: 'PUT',
-                    headers: getHeaders(),
-                    cache: 'no-store',
-                    body: JSON.stringify({ id: item.detailId, variantValue: item.netPrice }),
-                });
-                const text = await response.text();
-                let body: Record<string, unknown> = {};
-                try { body = text ? JSON.parse(text) as Record<string, unknown> : {}; } catch { body = { raw: text }; }
-                if (!response.ok) throw new Error(String(body.description ?? body.message ?? body.error ?? body.raw ?? response.statusText));
+                let lastError = 'Bsale no respondió correctamente.';
+                let updated = false;
+                for (let attempt = 0; attempt < 5; attempt += 1) {
+                    const response = await fetch(`${BSALE_API}/price_lists/${editableListId}/details/${item.detailId}.json`, {
+                        method: 'PUT',
+                        headers: getHeaders(),
+                        cache: 'no-store',
+                        body: JSON.stringify({ id: item.detailId, variantValue: item.netPrice }),
+                    });
+                    const text = await response.text();
+                    let body: Record<string, unknown> = {};
+                    try { body = text ? JSON.parse(text) as Record<string, unknown> : {}; } catch { body = { raw: text }; }
+                    if (response.ok) {
+                        updated = true;
+                        break;
+                    }
+                    lastError = `${response.status}: ${String(body.description ?? body.message ?? body.error ?? body.raw ?? response.statusText)}`;
+                    if (!RETRYABLE_STATUSES.has(response.status) || attempt === 4) break;
+                    const retryAfter = Number(response.headers.get('retry-after'));
+                    await wait(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 750 * (2 ** attempt));
+                }
+                if (!updated) throw new Error(lastError);
                 results[index] = { variantId: item.variantId, detailId: item.detailId, success: true };
             } catch (error) {
                 results[index] = {
@@ -284,6 +303,7 @@ export async function updatePrices(editableListId: number, updates: PriceUpdateI
                     error: error instanceof Error ? error.message : 'Error desconocido',
                 };
             }
+            await wait(UPDATE_DELAY_MS);
         }
     });
     await Promise.all(workers);
