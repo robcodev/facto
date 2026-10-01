@@ -1,16 +1,25 @@
 alter table public.web_orders
-    add column picking_status text not null default 'pending',
-    add column picking_started_at timestamptz,
-    add column picking_completed_at timestamptz;
+    add column if not exists picking_status text not null default 'pending',
+    add column if not exists picking_started_at timestamptz,
+    add column if not exists picking_completed_at timestamptz;
 
-alter table public.web_orders
-    add constraint web_orders_picking_status_check
-    check (picking_status in ('pending', 'in_progress', 'completed'));
+do $$
+begin
+    if not exists (
+        select 1 from pg_constraint
+        where conname = 'web_orders_picking_status_check'
+          and conrelid = 'public.web_orders'::regclass
+    ) then
+        alter table public.web_orders
+            add constraint web_orders_picking_status_check
+            check (picking_status in ('pending', 'in_progress', 'completed'));
+    end if;
+end $$;
 
 alter table public.web_order_items
-    add column barcode text;
+    add column if not exists barcode text;
 
-create index web_order_items_barcode_idx
+create index if not exists web_order_items_barcode_idx
     on public.web_order_items (order_id, barcode)
     where barcode is not null and barcode <> '';
 
