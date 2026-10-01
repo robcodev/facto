@@ -85,7 +85,10 @@ export async function importCheckout(resource: string) {
     const { error: itemError } = await supabase.from('web_order_items').upsert(items, { onConflict: 'order_id,bsale_cart_detail_id' });
     if (itemError) throw new Error(itemError.message);
 
-    const eligible = String(checkout.payProcess) === 'success' && Number(checkout.orderStatus) === 2 && documentNumber > 0;
+    const orderStatus = Number(checkout.orderStatus);
+    const eligible = String(checkout.payProcess) === 'success'
+        && documentNumber > 0
+        && ![6, 7].includes(orderStatus);
     if (eligible) {
         const { error: jobError } = await supabase.from('print_jobs').upsert({ organization_id: orgId, order_id: Number(order.id) }, { onConflict: 'order_id', ignoreDuplicates: true });
         if (jobError) throw new Error(jobError.message);
@@ -98,7 +101,9 @@ export async function importRecentPendingOrders() {
     const count = Number(first.count ?? 0);
     const offset = Math.max(0, count - 50);
     const latest = offset === 0 ? first : await bsaleGet(`/markets/checkout/list.json?limit=50&offset=${offset}`);
-    const pending = responseData(latest).filter((item) => String(item.payProcess) === 'success' && Number(item.orderStatus) === 2 && Number(item.documentNumber ?? 0) > 0);
+    const pending = responseData(latest).filter((item) => String(item.payProcess) === 'success'
+        && Number(item.documentNumber ?? 0) > 0
+        && ![6, 7].includes(Number(item.orderStatus)));
     const results = [];
     for (const checkout of pending) results.push(await importCheckout(String(checkout.url ?? `${BSALE_API}/checkout/${checkout.id}.json`)));
     return results;
