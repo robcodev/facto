@@ -101,14 +101,27 @@ export async function importCheckout(resource: string) {
     }, { onConflict: 'organization_id,bsale_checkout_id' }).select('id').single();
     if (orderError) throw new Error(orderError.message);
 
-    const items = cartItems.map((item) => ({
-        order_id: Number(order.id),
-        bsale_cart_detail_id: Number(item.id ?? item.cd_id),
-        bsale_variant_id: Number(item.idVarianteProducto ?? item.id_variante_producto),
-        sku: String(item.sku ?? item.codigo_variante_producto ?? '').trim(),
-        item_name: String(item.itemName ?? item.name ?? '').trim(),
-        quantity: Math.max(1, Math.round(Number(item.quantity ?? item.cd_q ?? 1))),
-    })).filter((item) => Number.isInteger(item.bsale_cart_detail_id) && Number.isInteger(item.bsale_variant_id) && item.sku);
+    const items = (await Promise.all(cartItems.map(async (item) => {
+        const variantId = Number(item.idVarianteProducto ?? item.id_variante_producto);
+        let barcode = '';
+        if (Number.isInteger(variantId) && variantId > 0) {
+            try {
+                const variant = await bsaleGet(`/variants/${variantId}.json`);
+                barcode = String(variant.barCode ?? '').trim();
+            } catch {
+                // El SKU sigue disponible como respaldo si Bsale no entrega el código de barras.
+            }
+        }
+        return {
+            order_id: Number(order.id),
+            bsale_cart_detail_id: Number(item.id ?? item.cd_id),
+            bsale_variant_id: variantId,
+            sku: String(item.sku ?? item.codigo_variante_producto ?? '').trim(),
+            barcode: barcode || null,
+            item_name: String(item.itemName ?? item.name ?? '').trim(),
+            quantity: Math.max(1, Math.round(Number(item.quantity ?? item.cd_q ?? 1))),
+        };
+    }))).filter((item) => Number.isInteger(item.bsale_cart_detail_id) && Number.isInteger(item.bsale_variant_id) && item.sku);
     if (items.length === 0) throw new Error('El pedido no contiene productos con SKU válidos.');
     const { error: itemError } = await supabase.from('web_order_items').upsert(items, { onConflict: 'order_id,bsale_cart_detail_id' });
     if (itemError) throw new Error(itemError.message);

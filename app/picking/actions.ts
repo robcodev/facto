@@ -22,7 +22,7 @@ export async function getPickingOrder(documentNumber: number) {
         const { data: organization, error: organizationError } = await supabase.from('organizations').select('id').eq('slug', 'facto-compartido').single();
         if (organizationError) throw new Error(organizationError.message);
         const { data, error } = await supabase.from('web_orders')
-            .select('id,bsale_checkout_id,document_number,pay_process,order_status,shipping_method,total,source_created_at,web_order_items(id,sku,item_name,quantity,picked_quantity)')
+            .select('id,bsale_checkout_id,document_number,pay_process,order_status,shipping_method,total,source_created_at,picking_status,picking_started_at,picking_completed_at,web_order_items(id,sku,barcode,item_name,quantity,picked_quantity)')
             .eq('organization_id', organization.id)
             .eq('document_number', documentNumber)
             .maybeSingle();
@@ -31,5 +31,18 @@ export async function getPickingOrder(documentNumber: number) {
         return { success: true as const, order: data };
     } catch (error) {
         return { success: false as const, order: null, error: error instanceof Error ? error.message : 'No pudimos cargar el pedido.' };
+    }
+}
+
+export async function scanPickingProduct(orderId: number, code: string) {
+    try {
+        const cleanCode = String(code).trim();
+        if (!Number.isInteger(orderId) || orderId <= 0 || !cleanCode || cleanCode.length > 100) throw new Error('Código inválido.');
+        const supabase = createAdminClient();
+        const { data, error } = await supabase.rpc('scan_picking_item', { p_order_id: orderId, p_code: cleanCode });
+        if (error) throw new Error(error.message);
+        return { success: true as const, result: data as { status: string; itemId?: number; pickedQuantity?: number; quantity?: number; completed?: boolean } };
+    } catch (error) {
+        return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos validar el producto.' };
     }
 }
