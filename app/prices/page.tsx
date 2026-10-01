@@ -167,6 +167,18 @@ export default function PricesPage() {
         ]);
     }
 
+    function exportCampaignProducts() {
+        const rows = [...campaignItems.values()].sort((a, b) => a.productName.localeCompare(b.productName, 'es') || a.variantName.localeCompare(b.variantName, 'es') || a.sku.localeCompare(b.sku, 'es', { numeric: true }));
+        downloadExcel(activeCampaign?.name ?? 'productos-cyber', 'Productos Cyber', rows, [
+            { header: 'SKU', value: (item) => item.sku, width: 18 },
+            { header: 'Producto', value: (item) => item.productName, width: 42 },
+            { header: 'Variante', value: (item) => item.variantName, width: 28 },
+            { header: 'Descuento guardado', value: (item) => item.discount, width: 20, numberFormat: 'percent' },
+            { header: 'Agregado recientemente', value: (item) => item.isNew ? 'Sí' : 'No', width: 22 },
+            { header: 'Fecha de incorporación', value: (item) => item.createdAt ? new Date(item.createdAt).toLocaleDateString('es-CL') : '', width: 22 },
+        ]);
+    }
+
     function saveDiscounts() {
         const items = priced.map(({ variantId, productId, sku, productName, variantName, discount, createdAt, isNew }) => ({ variantId, productId, sku, productName, variantName, discount, createdAt, isNew }));
         startTransition(async () => {
@@ -204,7 +216,7 @@ export default function PricesPage() {
         {mode === 'quick' && <section className="space-y-5"><Title title="Cambio rápido" subtitle="Compara listas completas y aplica directamente los cambios cuando los confirmes." />{configuration}{priced.length > 0 && <PricingWorkspace items={filteredPrices} stocks={stocks} search={search} setSearch={setSearch} family={family} setFamily={setFamily} families={families} discountFilter={discountFilter} setDiscountFilter={setDiscountFilter} sortKey={sortKey} setSortKey={setSortKey} sortDirection={sortDirection} setSortDirection={setSortDirection} onDiscount={changeDiscount} onPrice={changeFinalPrice} />}{priced.length > 0 && <ApplyPanel changed={changed} risky={risky} invalid={invalid} riskAccepted={riskAccepted} setRiskAccepted={setRiskAccepted} isPending={isPending} progress={progress} results={results} apply={applyToBsale} targetName={lists.find((list) => String(list.id) === targetId)?.name ?? ''} />}</section>}
         {mode === 'campaigns' && !campaignId && <CampaignList campaigns={campaigns} open={openCampaign} create={() => setCreateOpen(true)} />}
         {mode === 'campaigns' && campaignId && <section className="space-y-5">
-            <div className="flex flex-wrap items-center gap-3"><button onClick={() => leaveCampaign(setCampaignId, setSection, setPriced, setCatalog, setDirty, dirty)} className="rounded-md border px-3 py-2 text-sm">← Campañas</button><Title title={activeCampaign?.name ?? 'Campaña'} subtitle={`${campaignItems.size} productos guardados`} /></div>
+            <div className="flex flex-wrap items-center gap-3"><button onClick={() => leaveCampaign(setCampaignId, setSection, setPriced, setCatalog, setDirty, dirty)} className="rounded-md border px-3 py-2 text-sm">← Campañas</button><Title title={activeCampaign?.name ?? 'Campaña'} subtitle={`${campaignItems.size} productos guardados`} /><button type="button" onClick={exportCampaignProducts} disabled={campaignItems.size === 0 || isPending} className="ml-auto rounded-md border border-green-600 bg-white px-4 py-2 text-sm font-semibold text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-40">Descargar lista en Excel</button></div>
             {section === 'home' && <CampaignMenu count={campaignItems.size} open={setSection} />}
             {section !== 'home' && <button onClick={() => { if (!dirty || window.confirm('Hay cambios sin guardar. ¿Quieres salir igualmente?')) { setSection('home'); setPriced([]); setCatalog([]); setDirty(false); } }} className="rounded-md border px-3 py-2 text-sm">← Menú de la campaña</button>}
             {section === 'products' && <div className="space-y-5"><Title title="Productos de la campaña" subtitle="Agrega o quita productos hoy y continúa cuando quieras." /><div className="grid gap-4 rounded-xl border bg-white p-5 md:grid-cols-[1fr_1fr_auto]"><Select label="Lista base para buscar productos" value={referenceId} setValue={setReferenceId} options={lists.map((list) => [String(list.id), list.name])} /><Select label="Sucursal para stock" value={officeId} setValue={setOfficeId} options={offices.map((office) => [String(office.id), office.name])} /><button onClick={loadCatalog} disabled={isPending || !referenceId || !officeId} className="self-end rounded-md bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-40">Cargar productos</button></div>{catalog.length > 0 && <><Filters search={search} setSearch={(value) => { setSearch(value); setPage(1); }} family={family} setFamily={(value) => { setFamily(value); setPage(1); }} families={families} catalogFilter={catalogFilter} setCatalogFilter={(value) => { setCatalogFilter(value); setPage(1); }} sortKey={sortKey} setSortKey={(value) => { setSortKey(value); setPage(1); }} sortDirection={sortDirection} setSortDirection={(value) => { setSortDirection(value); setPage(1); }} /><CatalogTable rows={visibleCatalog} selected={campaignItems} stocks={stocks} toggle={toggleProduct} /><Pager page={page} count={pageCount} total={filteredCatalog.length} setPage={setPage} /></>}<SaveBar text={`${campaignItems.size} productos`} dirty={dirty} disabled={!dirty || isPending} save={saveProducts} label="Guardar productos" /></div>}

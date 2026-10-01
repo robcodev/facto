@@ -229,8 +229,11 @@ export async function submitStockReception(payload: StockReceptionPayload) {
             }
         });
 
+        const documentType = ['FACTURA', 'GUÍA', 'OTRO'].includes(payload.documentType ?? '')
+            ? payload.documentType as 'FACTURA' | 'GUÍA' | 'OTRO'
+            : 'FACTURA';
         const bsalePayload = {
-            document: 'FACTURA',
+            document: documentType,
             officeId,
             documentNumber,
             note: payload.note?.trim() || 'Ingreso automatizado mediante Recepción por IA',

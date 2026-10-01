@@ -26,6 +26,8 @@ type InvoiceDiscount = {
     value: number;
 };
 
+type PurchaseDocumentType = 'FACTURA' | 'GUÍA' | 'OTRO';
+
 const MAX_UPLOAD_SIZE_BYTES = 4 * 1024 * 1024;
 
 export default function RecepcionPage() {
@@ -33,6 +35,8 @@ export default function RecepcionPage() {
     const [offices, setOffices] = useState<BsaleOffice[]>([]);
     const [selectedOffice, setSelectedOffice] = useState<string>('');
     const [documentNumber, setDocumentNumber] = useState<string>('');
+    const [documentType, setDocumentType] = useState<PurchaseDocumentType>('FACTURA');
+    const [documentNote, setDocumentNote] = useState('');
     const [items, setItems] = useState<UiItem[]>([]);
     const [processError, setProcessError] = useState<string | null>(null);
 
@@ -65,6 +69,7 @@ export default function RecepcionPage() {
         setDiscounts([{ id: 1, type: 'percentage', value: 0 }]);
 
         const formData = new FormData();
+        formData.append('documentType', documentType);
         Array.from(fileList).forEach((file) => {
             formData.append('files', file);
         });
@@ -79,7 +84,7 @@ export default function RecepcionPage() {
                 const errorResponse = (await response.json().catch(() => null)) as { error?: unknown } | null;
                 const message = typeof errorResponse?.error === 'string'
                     ? errorResponse.error
-                    : 'Error al procesar la factura con IA';
+                    : 'Error al procesar el documento con IA';
                 throw new Error(message);
             }
             const data = (await response.json()) as InvoiceProcessResponse;
@@ -120,7 +125,7 @@ export default function RecepcionPage() {
                 );
             }
         } catch (error) {
-            setProcessError(error instanceof Error ? error.message : 'Ocurrió un error procesando la factura.');
+            setProcessError(error instanceof Error ? error.message : 'Ocurrió un error procesando el documento.');
         } finally {
             setLoading(false);
         }
@@ -207,13 +212,15 @@ export default function RecepcionPage() {
 
     const handleFinalSubmit = async () => {
         if (!selectedOffice) return alert('Debes seleccionar una sucursal.');
-        if (!documentNumber.trim()) return alert('Debes ingresar el número de factura.');
+        if (!documentNumber.trim()) return alert('Debes ingresar el número del documento.');
 
         setLoading(true);
 
         const payload = {
             officeId: Number(selectedOffice),
             documentNumber: documentNumber,
+            documentType,
+            note: documentNote,
             details: items.map(item => ({
                 code: item.code,
                 quantity: item.quantity,
@@ -228,6 +235,7 @@ export default function RecepcionPage() {
             alert(`¡Recepción de Stock creada exitosamente en Bsale! ID: ${res.receptionId}`);
             setItems([]);
             setDocumentNumber('');
+            setDocumentNote('');
             setDiscounts([{ id: 1, type: 'percentage', value: 0 }]);
         } else {
             alert(`Error al guardar la recepción: ${res.error}`);
@@ -245,8 +253,15 @@ export default function RecepcionPage() {
             {/* PASO 1: Subida de Archivos y Botón de Inicio Manual siempre visible */}
             <section className="bg-white p-6 rounded-lg border shadow-sm space-y-4">
                 <div className="flex justify-between items-center">
-                    <h2 className="text-lg font-semibold text-gray-700">1. Carga la Factura</h2>
+                    <h2 className="text-lg font-semibold text-gray-700">1. Carga el documento</h2>
                 </div>
+                <label className="block max-w-sm text-sm font-medium text-gray-700">Tipo de documento en Bsale
+                    <select value={documentType} onChange={(event) => setDocumentType(event.target.value as PurchaseDocumentType)} disabled={loading} className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2">
+                        <option value="FACTURA">Factura</option>
+                        <option value="GUÍA">Guía</option>
+                        <option value="OTRO">Otro</option>
+                    </select>
+                </label>
                 <div className="flex items-center space-x-4">
                     <input
                         type="file"
@@ -273,7 +288,7 @@ export default function RecepcionPage() {
                         <thead>
                         <tr className="bg-gray-100 text-xs font-semibold text-gray-600 uppercase border-b">
                             <th className="p-4 text-left w-[50px]">#</th>
-                            <th className="p-4">SKU Factura</th>
+                            <th className="p-4">SKU documento</th>
                             <th className="p-4 w-[90px]">Cantidad</th>
                             <th className="p-4">Costo Lista (Neto)</th>
                             <th className="p-4 text-blue-700">Costo Real Prorrateado</th>
@@ -360,7 +375,7 @@ export default function RecepcionPage() {
                     <div className="p-6 bg-gray-50 border-t flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                         <div className="space-y-3 rounded-md border bg-white p-3 shadow-sm">
                             <div className="flex items-center justify-between gap-4">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Descuentos factura</span>
+                                <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">Descuentos documento</span>
                                 <button type="button" onClick={addDiscount} className="rounded-md border border-blue-200 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-50">+ Agregar descuento</button>
                             </div>
                             <div className="space-y-2">
@@ -402,7 +417,7 @@ export default function RecepcionPage() {
                                 </div>
                             )}
                             <div className="flex justify-between md:justify-end gap-8 border-t pt-1 font-bold text-gray-800 text-base">
-                                <span>Total Neto Factura (Control):</span>
+                                <span>Total neto documento (control):</span>
                                 <span className="text-blue-700 font-mono">${invoiceTotalNetFinal.toLocaleString('es-CL')}</span>
                             </div>
                         </div>
@@ -432,7 +447,7 @@ export default function RecepcionPage() {
                         </div>
 
                         <div className="flex flex-col space-y-2">
-                            <label className="text-sm font-medium text-gray-600">Número de Factura (Solo Números)</label>
+                            <label className="text-sm font-medium text-gray-600">Número del documento (solo números)</label>
                             <input
                                 type="text"
                                 inputMode="numeric"
@@ -443,6 +458,11 @@ export default function RecepcionPage() {
                                 disabled={!allSkusResolved || loading}
                                 className="p-2 border rounded-md bg-white text-sm"
                             />
+                        </div>
+                        <div className="flex flex-col space-y-2 md:col-span-2">
+                            <label className="text-sm font-medium text-gray-600">Comentario de la recepción</label>
+                            <textarea value={documentNote} onChange={(event) => setDocumentNote(event.target.value)} disabled={!allSkusResolved || loading} maxLength={500} rows={3} placeholder="Ej: Nota de venta del proveedor pendiente de factura" className="resize-y rounded-md border bg-white p-2 text-sm" />
+                            <span className="text-right text-xs text-gray-400">{documentNote.length}/500</span>
                         </div>
                     </div>
 

@@ -7,6 +7,7 @@ export interface ReceptionDetail {
 export interface StockReceptionPayload {
     officeId: number;
     documentNumber: string;
+    documentType?: 'FACTURA' | 'GUÍA' | 'OTRO';
     details: ReceptionDetail[];
     note?: string;
 }

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getBsaleOffices } from '@/app/reception/actions';
 import type { BsaleOffice } from '@/app/reception/types';
-import { submitFullPresale, submitFullReception, validateFullProduct, validateFullProducts, validateFullSku, validateFullSkus } from './actions';
+import { submitFullPresale, submitFullReception, validateFullSku, validateFullSkus } from './actions';
 import type { FullBsaleValidation, FullReportAnalysis } from './types';
 
 type ValidationMap = Record<string, FullBsaleValidation>;
@@ -14,9 +14,31 @@ const formatClp = (value: number) => new Intl.NumberFormat('es-CL', {
 const formatClpDetailed = (value: number) => new Intl.NumberFormat('es-CL', {
     style: 'currency', currency: 'CLP', minimumFractionDigits: 0, maximumFractionDigits: 2,
 }).format(value);
+const formatDate = (value: Date) => new Intl.DateTimeFormat('es-CL', {
+    day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC',
+}).format(value);
+
+function buildFullPeriods(months = 4) {
+    const today = new Date();
+    const firstMonth = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1));
+    let start = new Date(firstMonth);
+
+    return Array.from({ length: months }, (_, index) => {
+        const processDate = new Date(Date.UTC(firstMonth.getUTCFullYear(), firstMonth.getUTCMonth() + index + 1, 0));
+        const end = new Date(processDate);
+        end.setUTCDate(end.getUTCDate() - 1);
+        const period = {
+            label: new Intl.DateTimeFormat('es-CL', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(processDate),
+            start: new Date(start),
+            end,
+            processDate,
+        };
+        start = new Date(processDate);
+        return period;
+    });
+}
 
 export default function FullPage() {
-    const [workflow, setWorkflow] = useState<'reception' | 'presale' | null>(null);
     const [analysis, setAnalysis] = useState<FullReportAnalysis | null>(null);
     const [validations, setValidations] = useState<ValidationMap>({});
     const [editedSkus, setEditedSkus] = useState<Record<string, string>>({});
@@ -54,19 +76,6 @@ export default function FullPage() {
         validationList.length === analysis.items.length &&
         validationList.every((item) => item.originalExists && item.fullExists && !item.error)
     );
-
-    const selectWorkflow = (next: 'reception' | 'presale') => {
-        if (workflow === next) return;
-        setWorkflow(next);
-        setAnalysis(null);
-        setValidations({});
-        setEditedSkus({});
-        setReceptionId(null);
-        setPresaleResult(null);
-        setPresaleMessage(null);
-        setPresalePrices({});
-        setMessage(null);
-    };
 
     const totalCost = analysis?.items.reduce((sum, item) => {
         const cost = validations[item.originalSku]?.averageCost ?? 0;
@@ -108,11 +117,6 @@ export default function FullPage() {
             setAnalysis(result);
             setPresalePrices(Object.fromEntries(result.items.map((item) => [item.fullSku, item.presaleNetUnitValue])));
             setDocumentNumber(new Date().toISOString().slice(0, 7).replace('-', ''));
-            if (workflow === 'presale') {
-                setValidating(true);
-                const validationResults = await validateFullProducts(result.items.map((item) => item.originalSku));
-                setValidations(Object.fromEntries(result.items.map((item, index) => [item.originalSku, validationResults[index]])));
-            }
         } catch (error) {
             setMessage(error instanceof Error ? error.message : 'No pudimos analizar el reporte.');
         } finally {
@@ -161,9 +165,7 @@ export default function FullPage() {
 
         setMessage(null);
         setValidatingRows((current) => ({ ...current, [reportSku]: true }));
-        const validation = workflow === 'presale'
-            ? await validateFullProduct(currentSku)
-            : await validateFullSku(currentSku);
+        const validation = await validateFullSku(currentSku);
         setValidations((current) => ({ ...current, [reportSku]: validation }));
         setValidatingRows((current) => {
             const next = { ...current };
@@ -265,30 +267,27 @@ export default function FullPage() {
         <div className="mx-auto max-w-7xl space-y-6 p-6">
             <header className="border-b pb-4">
                 <h1 className="text-2xl font-bold text-gray-900">Mercado Libre Full</h1>
-                <p className="mt-1 text-sm text-gray-600">Elige qué proceso quieres preparar y carga su reporte de Mercado Libre.</p>
+                <p className="mt-1 text-sm text-gray-600">Carga el reporte una sola vez: primero crea la recepción y luego la preventa con los mismos productos.</p>
             </header>
 
-            <section className="grid gap-4 sm:grid-cols-2">
-                <button type="button" onClick={() => selectWorkflow('reception')} className={`rounded-lg border-2 p-6 text-left shadow-sm transition ${workflow === 'reception' ? 'border-green-500 bg-green-50' : 'border-gray-200 bg-white hover:border-green-300'}`}><span className="text-lg font-bold text-gray-900">Recepción Full</span><span className="mt-2 block text-sm text-gray-600">Sube un Excel para revisar SKU, cantidades y costos antes de ingresar stock.</span></button>
-                <button type="button" onClick={() => selectWorkflow('presale')} className={`rounded-lg border-2 p-6 text-left shadow-sm transition ${workflow === 'presale' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 bg-white hover:border-blue-300'}`}><span className="text-lg font-bold text-gray-900">Preventa Full</span><span className="mt-2 block text-sm text-gray-600">Sube un Excel para revisar SKU, cantidades e importes finales antes de crear la preventa.</span></button>
-            </section>
+            <FullPeriodSchedule />
 
-            {workflow && <section className="space-y-4 rounded-lg border bg-white p-6 shadow-sm">
+            <section className="space-y-4 rounded-lg border bg-white p-6 shadow-sm">
                 <div>
-                    <h2 className="font-semibold text-gray-800">1. Carga el Excel para {workflow === 'reception' ? 'la recepción' : 'la preventa'}</h2>
+                    <h2 className="font-semibold text-gray-800">1. Carga el Excel de Mercado Libre Full</h2>
                     <p className="mt-1 text-sm text-gray-500">Se aceptan archivos .xlsx de hasta 5 MB. Las compras con varios productos se separan por SKU.</p>
                 </div>
-                <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleFile} disabled={loading || validating || submitting} className="block w-full text-sm text-gray-500 file:mr-4 file:rounded-md file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:font-semibold file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50" />
+                <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={handleFile} disabled={loading || validating || submitting || Boolean(receptionId)} className="block w-full text-sm text-gray-500 file:mr-4 file:rounded-md file:border-0 file:bg-blue-50 file:px-4 file:py-2 file:font-semibold file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50" />
                 {loading && <p className="text-sm font-medium text-blue-600">Analizando reporte…</p>}
                 {message && <p className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">{message}</p>}
-            </section>}
+            </section>
 
             {analysis && (
                 <>
                     <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                         <Summary label="Filas del reporte" value={analysis.sourceRows} />
                         <Summary label="Ventas incluidas" value={analysis.includedRows} />
-                        <Summary label={workflow === 'reception' ? 'Unidades a recibir' : 'Unidades en preventa'} value={analysis.includedUnits} />
+                        <Summary label="Unidades a recibir" value={analysis.includedUnits} />
                         <Summary label="SKU distintos" value={analysis.items.length} />
                     </section>
                     <section className="grid gap-4 sm:grid-cols-2">
@@ -296,21 +295,21 @@ export default function FullPage() {
                         <div className="rounded-lg border bg-white p-4 shadow-sm"><p className="text-xs font-medium uppercase tracking-wide text-gray-500">Importe distribuido desde compras combinadas</p><p className="mt-2 text-2xl font-bold text-gray-900">{formatClpDetailed(analysis.combinedAllocatedWithTax)}</p><p className="mt-1 text-xs text-gray-500">Asignado proporcionalmente según el precio publicado de cada producto.</p></div>
                     </section>
 
-                    {workflow === 'reception' && <section className="space-y-4 rounded-lg border bg-white p-6 shadow-sm">
+                    <section className="space-y-4 rounded-lg border bg-white p-6 shadow-sm">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
-                                <h2 className="font-semibold text-gray-800">2. Valida {workflow === 'reception' ? 'productos y costos' : 'productos'} en Bsale</h2>
-                                <p className="mt-1 text-sm text-gray-500">{workflow === 'reception' ? 'Se revisa el SKU original, el SKU con prefijo FULL y el costo de su recepción más reciente.' : 'Se revisa que el SKU original y su SKU con prefijo FULL existan. Los precios se calculan desde el Excel.'}</p>
+                                <h2 className="font-semibold text-gray-800">2. Valida productos y costos en Bsale</h2>
+                                <p className="mt-1 text-sm text-gray-500">Se revisa el SKU original, el SKU con prefijo FULL y el costo de su recepción más reciente.</p>
                             </div>
                             <button onClick={handleValidate} disabled={validating || analysis.items.length === 0} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">
-                                {validating ? (workflow === 'reception' ? 'Validando productos y buscando costos…' : 'Validando productos…') : 'Validar en Bsale'}
+                                {validating ? 'Validando productos y buscando costos…' : 'Validar en Bsale'}
                             </button>
                         </div>
 
                         <div className="overflow-x-auto rounded-md border">
                             <table className="min-w-full divide-y divide-gray-200 text-sm">
                                 <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
-                                    <tr><th className="px-3 py-3">SKU original</th><th className="px-3 py-3">SKU FULL</th><th className="px-3 py-3 text-right">Cantidad</th>{workflow === 'reception' && <th className="px-3 py-3 text-right">Último costo</th>}<th className="px-3 py-3">Validación</th><th className="px-3 py-3">Acción</th></tr>
+                                    <tr><th className="px-3 py-3">SKU original</th><th className="px-3 py-3">SKU FULL</th><th className="px-3 py-3 text-right">Cantidad</th><th className="px-3 py-3 text-right">Último costo</th><th className="px-3 py-3">Validación</th><th className="px-3 py-3">Acción</th></tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100">
                                     {analysis.items.map((item) => {
@@ -327,7 +326,7 @@ export default function FullPage() {
                                                     type="text"
                                                     value={currentSku}
                                                     onChange={(event) => handleSkuChange(item.originalSku, event.target.value)}
-                                                    disabled={validating || Boolean(validatingRows[item.originalSku]) || submitting}
+                                                    disabled={validating || Boolean(validatingRows[item.originalSku]) || submitting || Boolean(receptionId)}
                                                     aria-label={`SKU original de ${item.originalSku}`}
                                                     className={`w-44 rounded-md border px-2 py-1.5 font-medium ${wasEdited ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-gray-300 bg-white text-gray-900'}`}
                                                 />
@@ -336,7 +335,7 @@ export default function FullPage() {
                                             </td>
                                             <td className="px-3 py-3 font-medium text-gray-700">{currentFullSku}</td>
                                             <td className="px-3 py-3 text-right tabular-nums">{item.quantity}</td>
-                                            {workflow === 'reception' && <td className="px-3 py-3 text-right">
+                                            <td className="px-3 py-3 text-right">
                                                 {validation ? <div>
                                                     <input
                                                         type="number"
@@ -344,6 +343,7 @@ export default function FullPage() {
                                                         step="1"
                                                         value={validation.averageCost ?? 0}
                                                         onChange={(event) => handleCostChange(item.originalSku, event.target.value)}
+                                                        disabled={Boolean(receptionId)}
                                                         aria-label={`Costo de ${item.originalSku}`}
                                                         className={`w-32 rounded-md border px-2 py-1.5 text-right tabular-nums ${hasValidCost ? 'border-gray-300 bg-white' : 'border-red-500 bg-red-50 text-red-800'}`}
                                                     />
@@ -351,13 +351,13 @@ export default function FullPage() {
                                                         {validation.costSource === 'manual' ? 'Corregido manualmente' : validation.costSource === 'last_reception' ? `Última recepción${validation.costDate ? ` · ${validation.costDate}` : ''}` : validation.costSource === 'average' ? 'Promedio disponible' : 'Sin costo disponible'}
                                                     </div>
                                                 </div> : '—'}
-                                            </td>}
+                                            </td>
                                             <td className="px-3 py-3"><span className={ok ? 'text-green-700' : validation ? 'text-red-700' : 'text-gray-400'}>{ok ? 'Listo' : validation?.error || (validation ? `${!validation.originalExists ? 'Falta original. ' : ''}${!validation.fullExists ? 'Falta FULL. ' : ''}${!hasValidCost ? 'Costo pendiente.' : ''}`.trim() : wasEdited ? 'SKU modificado: vuelve a validar' : 'Pendiente')}</span></td>
                                             <td className="px-3 py-3">
                                                 <button
                                                     type="button"
                                                     onClick={() => handleValidateOne(item.originalSku)}
-                                                    disabled={validating || Boolean(validatingRows[item.originalSku]) || !currentSku.trim()}
+                                                    disabled={validating || Boolean(validatingRows[item.originalSku]) || !currentSku.trim() || Boolean(receptionId)}
                                                     className="whitespace-nowrap rounded-md border border-blue-300 bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                                                 >
                                                     {validatingRows[item.originalSku] ? 'Validando…' : validation ? 'Revalidar' : 'Validar'}
@@ -368,7 +368,7 @@ export default function FullPage() {
                                 </tbody>
                             </table>
                         </div>
-                    </section>}
+                    </section>
 
                     {analysis.exclusions.length > 0 && (
                         <section className="rounded-lg border border-amber-200 bg-amber-50 p-5">
@@ -379,28 +379,27 @@ export default function FullPage() {
                     )}
 
                     <div>
-                    {workflow === 'reception' && <section className="space-y-4 rounded-lg border border-green-200 bg-white p-6 shadow-sm">
+                    <section className="space-y-4 rounded-lg border border-green-200 bg-white p-6 shadow-sm">
                         <div><h2 className="font-semibold text-gray-800">3. Crear recepción Full</h2><p className="mt-1 text-sm text-gray-500">Usa las cantidades del Excel y el último costo validado de cada producto original.</p></div>
                         <div className="grid gap-4 sm:grid-cols-2">
-                            <label className="text-sm font-medium text-gray-700">Sucursal<select value={selectedOffice} onChange={(event) => setSelectedOffice(event.target.value)} className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2"><option value="">Seleccionar…</option>{offices.map((office) => <option key={office.id} value={office.id}>{office.name}</option>)}</select></label>
-                            <label className="text-sm font-medium text-gray-700">Referencia numérica<input value={documentNumber} onChange={(event) => setDocumentNumber(event.target.value.replace(/\D/g, ''))} inputMode="numeric" className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2" /></label>
+                            <label className="text-sm font-medium text-gray-700">Sucursal<select value={selectedOffice} onChange={(event) => setSelectedOffice(event.target.value)} disabled={Boolean(receptionId)} className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2"><option value="">Seleccionar…</option>{offices.map((office) => <option key={office.id} value={office.id}>{office.name}</option>)}</select></label>
+                            <label className="text-sm font-medium text-gray-700">Referencia numérica<input value={documentNumber} onChange={(event) => setDocumentNumber(event.target.value.replace(/\D/g, ''))} disabled={Boolean(receptionId)} inputMode="numeric" className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2" /></label>
                         </div>
                         <div className="rounded-md bg-gray-50 p-3"><p className="text-xs uppercase text-gray-500">Costo total estimado</p><p className="mt-1 text-lg font-semibold text-gray-900">{formatClp(totalCost)}</p></div>
                         {receptionId ? <div className="rounded-md bg-green-50 px-4 py-3 text-sm font-medium text-green-800">Recepción creada correctamente. ID: {receptionId}</div> : <button onClick={handleSubmit} disabled={!allValidated || submitting || validating || hasRowsValidating} className="rounded-md bg-green-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40">{submitting ? 'Creando recepción…' : 'Crear recepción Full'}</button>}
-                    </section>}
+                    </section>
 
-                    {workflow === 'presale' && (
+                    {receptionId && (
                         <section className="space-y-4 rounded-lg border border-blue-200 bg-white p-6 shadow-sm">
                             <div>
-                                <h2 className="font-semibold text-gray-800">3. Crear preventa Full</h2>
-                                <p className="mt-1 text-sm text-gray-500">Revisa los SKU FULL, el precio unitario efectivamente recibido y las cantidades del Excel.</p>
+                                <h2 className="font-semibold text-gray-800">4. Crear preventa Full</h2>
+                                <p className="mt-1 text-sm text-gray-500">La recepción ya fue creada. Revisa los precios recibidos del mismo Excel y crea la preventa sin volver a cargar el archivo.</p>
                             </div>
-                            {!productsValidated && <div className="rounded-md bg-amber-50 px-4 py-3 text-sm text-amber-800">La tabla ya está calculada. Valida los productos en Bsale antes de habilitar la creación de la preventa.</div>}
                             <div className="grid gap-4 sm:grid-cols-2">
                                 <label className="text-sm font-medium text-gray-700">Sucursal
-                                    <select value={selectedOffice} onChange={(event) => setSelectedOffice(event.target.value)} disabled={Boolean(presaleResult)} className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2"><option value="">Seleccionar…</option>{offices.map((office) => <option key={office.id} value={office.id}>{office.name}</option>)}</select>
+                                    <select value={selectedOffice} onChange={(event) => setSelectedOffice(event.target.value)} disabled className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2"><option value="">Seleccionar…</option>{offices.map((office) => <option key={office.id} value={office.id}>{office.name}</option>)}</select>
                                 </label>
-                                <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700"><p className="text-xs font-medium uppercase text-gray-500">Cliente obligatorio</p><p className="mt-1 font-semibold">Mercado Libre S.A. (Full)</p><p className="text-xs text-gray-500">RUT 77.398.220-1</p></div>
+                                <div className="rounded-md bg-gray-50 p-3 text-sm text-gray-700"><p className="text-xs font-medium uppercase text-gray-500">Cliente y vendedor</p><p className="mt-1 font-semibold">Mercado Libre S.A. (Full)</p><p className="text-xs text-gray-500">RUT 77.398.220-1 · Vendedor: Mercado Libre</p></div>
                             </div>
 
                             {Object.keys(presalePrices).length > 0 && <div className="overflow-x-auto rounded-md border">
@@ -412,7 +411,7 @@ export default function FullPage() {
                                         const validation = validations[item.originalSku];
                                         const skuReady = Boolean(validation?.originalExists && validation?.fullExists && !validation.error);
                                         const grossUnitPrice = price * 1.19;
-                                        return <tr key={item.originalSku} className={price > 0 && skuReady ? undefined : 'bg-red-50'}><td className="px-3 py-3"><input value={sku} onChange={(event) => handleSkuChange(item.originalSku, event.target.value.replace(/^FULL/i, ''))} disabled={Boolean(presaleResult) || Boolean(validatingRows[item.originalSku])} className={`w-48 rounded-md border px-2 py-1.5 font-medium ${skuReady ? 'border-gray-300 bg-white' : 'border-red-400 bg-red-50'}`} /><div className={`mt-1 text-xs ${skuReady ? 'text-green-700' : 'text-red-700'}`}>{validatingRows[item.originalSku] ? 'Validando…' : skuReady ? 'SKU validado' : validation?.error || 'Pendiente de validar'} {!skuReady && <button type="button" onClick={() => handleValidateOne(item.originalSku)} className="ml-2 font-semibold underline">Validar</button>}</div></td><td className="px-3 py-3 text-right"><input type="number" min="0" step="0.01" value={Math.round(grossUnitPrice * 100) / 100} onChange={(event) => handlePresaleGrossPriceChange(sku, event.target.value)} disabled={Boolean(presaleResult)} aria-label={`Precio de venta recibido de ${sku}`} className={`w-40 rounded-md border px-2 py-1.5 text-right tabular-nums ${price > 0 ? 'border-gray-300' : 'border-red-500 bg-red-50 text-red-800'}`} /><div className="mt-1 text-xs text-gray-500">Total: {formatClpDetailed(item.finalAmountWithTax)}</div></td><td className="px-3 py-3 text-right tabular-nums">{item.quantity}</td></tr>;
+                                        return <tr key={item.originalSku} className={price > 0 && skuReady ? undefined : 'bg-red-50'}><td className="px-3 py-3"><input value={sku} disabled className={`w-48 rounded-md border px-2 py-1.5 font-medium ${skuReady ? 'border-gray-300 bg-gray-50' : 'border-red-400 bg-red-50'}`} /><div className={`mt-1 text-xs ${skuReady ? 'text-green-700' : 'text-red-700'}`}>{skuReady ? 'SKU usado en la recepción' : validation?.error || 'SKU no validado'}</div></td><td className="px-3 py-3 text-right"><input type="number" min="0" step="0.01" value={Math.round(grossUnitPrice * 100) / 100} onChange={(event) => handlePresaleGrossPriceChange(sku, event.target.value)} disabled={Boolean(presaleResult)} aria-label={`Precio de venta recibido de ${sku}`} className={`w-40 rounded-md border px-2 py-1.5 text-right tabular-nums ${price > 0 ? 'border-gray-300' : 'border-red-500 bg-red-50 text-red-800'}`} /><div className="mt-1 text-xs text-gray-500">Total: {formatClpDetailed(item.finalAmountWithTax)}</div></td><td className="px-3 py-3 text-right tabular-nums">{item.quantity}</td></tr>;
                                     })}</tbody>
                                 </table>
                             </div>}
@@ -437,4 +436,20 @@ export default function FullPage() {
 
 function Summary({ label, value }: { label: string; value: number }) {
     return <div className="rounded-lg border bg-white p-4 shadow-sm"><p className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</p><p className="mt-2 text-2xl font-bold text-gray-900">{value}</p></div>;
+}
+
+function FullPeriodSchedule() {
+    const periods = buildFullPeriods();
+    return <section className="overflow-hidden rounded-lg border bg-white shadow-sm">
+        <div className="border-b px-5 py-4">
+            <h2 className="font-semibold text-gray-900">Calendario de cierres Full</h2>
+            <p className="mt-1 text-sm text-gray-500">El proceso se realiza el último día del mes e incluye ventas solamente hasta el día anterior.</p>
+        </div>
+        <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500"><tr><th className="px-5 py-3">Período</th><th className="px-5 py-3">Ventas desde</th><th className="px-5 py-3">Ventas hasta</th><th className="px-5 py-3">Hacer recepción y preventa</th></tr></thead>
+                <tbody className="divide-y divide-gray-100">{periods.map((period, index) => <tr key={period.processDate.toISOString()} className={index === 0 ? 'bg-blue-50/50' : undefined}><td className="px-5 py-3 font-medium capitalize text-gray-900">{period.label}{index === 0 && <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700">Actual</span>}</td><td className="px-5 py-3 tabular-nums">{formatDate(period.start)}</td><td className="px-5 py-3 tabular-nums">{formatDate(period.end)}</td><td className="px-5 py-3 font-semibold tabular-nums text-gray-900">{formatDate(period.processDate)}</td></tr>)}</tbody>
+            </table>
+        </div>
+    </section>;
 }

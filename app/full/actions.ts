@@ -6,6 +6,7 @@ import type { FullBsaleValidation, FullPresalePayload } from './types';
 
 const BSALE_TOKEN = process.env.BSALE_TOKEN;
 const FULL_CLIENT_CODE = '77398220-1';
+const FULL_SELLER_NAME = 'Mercado Libre';
 
 const getBsaleHeaders = () => {
     if (!BSALE_TOKEN) throw new Error('Falta configurar la variable de entorno BSALE_TOKEN');
@@ -22,6 +23,32 @@ async function getJson(url: string) {
         throw new Error(String(record.description ?? record.message ?? record.error ?? record.raw ?? response.statusText));
     }
     return data as Record<string, unknown>;
+}
+
+const normalizeName = (value: unknown) => String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase('es-CL');
+
+async function findFullSellerId() {
+    const expected = normalizeName(FULL_SELLER_NAME);
+    const pageSize = 50;
+
+    for (let offset = 0; ; offset += pageSize) {
+        const data = await getJson(`https://api.bsale.io/v1/users.json?state=0&limit=${pageSize}&offset=${offset}`);
+        const users = Array.isArray(data.items) ? data.items as Array<Record<string, unknown>> : [];
+        const seller = users.find((user) => {
+            const fullName = normalizeName(`${String(user.firstName ?? '')} ${String(user.lastName ?? '')}`);
+            return fullName === expected || normalizeName(user.firstName) === expected;
+        });
+        const sellerId = Number(seller?.id);
+        if (Number.isInteger(sellerId) && sellerId > 0) return sellerId;
+        if (users.length < pageSize) break;
+    }
+
+    throw new Error(`No encontramos un vendedor activo llamado “${FULL_SELLER_NAME}” en Bsale.`);
 }
 
 async function findVariant(code: string) {
@@ -259,7 +286,10 @@ export async function submitFullPresale(payload: FullPresalePayload) {
         if (priceListId !== undefined && (!Number.isInteger(priceListId) || priceListId <= 0)) throw new Error('Lista de precios inválida.');
         if (!Array.isArray(payload.details) || payload.details.length === 0) throw new Error('La preventa no contiene productos.');
 
-        const clientsData = await getJson(`https://api.bsale.io/v1/clients.json?code=${encodeURIComponent(FULL_CLIENT_CODE)}&state=0&limit=50`);
+        const [clientsData, sellerId] = await Promise.all([
+            getJson(`https://api.bsale.io/v1/clients.json?code=${encodeURIComponent(FULL_CLIENT_CODE)}&state=0&limit=50`),
+            findFullSellerId(),
+        ]);
         const clients = Array.isArray(clientsData.items) ? clientsData.items as Array<Record<string, unknown>> : [];
         const normalizeCode = (value: unknown) => String(value ?? '').replace(/[^0-9kK]/g, '').toUpperCase();
         const client = clients.find((item) => normalizeCode(item.code) === normalizeCode(FULL_CLIENT_CODE));
@@ -293,6 +323,7 @@ export async function submitFullPresale(payload: FullPresalePayload) {
             dispatch: 0,
             observation: 'Preventa generada desde recepción Mercado Libre Full',
             clientId,
+            sellerId,
             details,
         };
 

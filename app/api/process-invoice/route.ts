@@ -82,7 +82,7 @@ function normalizeAiResponse(text: string) {
         return { code, quantity, totalNet, netUnitValue };
     });
 
-    if (invoiceItems.length === 0) throw new Error('La IA no encontró productos en la factura.');
+    if (invoiceItems.length === 0) throw new Error('La IA no encontró productos en el documento.');
 
     return {
         documentNumber: String(data.documentNumber ?? '').replace(/\D/g, ''),
@@ -101,9 +101,9 @@ function publicErrorMessage(status: number, error: unknown) {
         return 'Gemini recibió demasiadas solicitudes o alcanzó su cuota. Espera unos segundos e inténtalo nuevamente.';
     }
     if (status === 408 || status === 504) {
-        return 'El procesamiento de la factura tardó demasiado. Intenta nuevamente.';
+        return 'El procesamiento del documento tardó demasiado. Intenta nuevamente.';
     }
-    return error instanceof Error ? error.message : 'Error interno procesando la factura.';
+    return error instanceof Error ? error.message : 'Error interno procesando el documento.';
 }
 
 export async function POST(req: NextRequest) {
@@ -116,7 +116,7 @@ export async function POST(req: NextRequest) {
         }
         if (entries.length > MAX_FILES) {
             return NextResponse.json(
-                { error: `Puedes subir un máximo de ${MAX_FILES} archivos por factura.` },
+                { error: `Puedes subir un máximo de ${MAX_FILES} archivos por documento.` },
                 { status: 400 }
             );
         }
@@ -156,14 +156,17 @@ export async function POST(req: NextRequest) {
             },
         })));
 
-        const promptText = `Analiza los archivos adjuntos de la factura de compra (pueden ser una o más páginas).
+        const requestedDocumentType = ['FACTURA', 'GUÍA', 'OTRO'].includes(String(formData.get('documentType')))
+            ? String(formData.get('documentType')).toLocaleLowerCase('es-CL')
+            : 'factura';
+        const promptText = `Analiza los archivos adjuntos del documento de compra seleccionado como “${requestedDocumentType}” (pueden ser una o más páginas).
 Extrae todos los ítems de forma consolidada en un único listado.
 
 REGLAS CRÍTICAS DE EXTRACCIÓN:
 1. Para cada producto, identifica la cantidad y el monto TOTAL NETO del ítem en esa línea.
 2. Calcula matemáticamente netUnitValue dividiendo el Total Neto por la Cantidad (Total Neto / Cantidad).
    Este valor debe ser el costo unitario real con todos los descuentos ya aplicados.
-3. Captura el número de la factura. Si contiene letras u otros caracteres, devuelve solamente sus dígitos.`;
+3. Captura el número del documento. Si contiene letras u otros caracteres, devuelve solamente sus dígitos.`;
 
         let lastError: unknown;
 
@@ -188,7 +191,7 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                             properties: {
                                 documentNumber: {
                                     type: Type.STRING,
-                                    description: 'Número de la factura conteniendo únicamente dígitos',
+                                    description: 'Número del documento conteniendo únicamente dígitos',
                                 },
                                 invoiceItems: {
                                     type: Type.ARRAY,
@@ -216,15 +219,15 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                 const status = getErrorStatus(error);
                 const hasAnotherAttempt = attempt < MODEL_ATTEMPTS.length - 1;
 
-                console.error(`Error procesando factura con ${model} (intento ${attempt + 1}):`, error);
+                console.error(`Error procesando documento con ${model} (intento ${attempt + 1}):`, error);
                 if (!hasAnotherAttempt || !TRANSIENT_STATUS_CODES.has(status)) throw error;
                 await wait(1_000 + Math.floor(Math.random() * 300));
             }
         }
 
-        throw lastError ?? new Error('No fue posible procesar la factura.');
+        throw lastError ?? new Error('No fue posible procesar el documento.');
     } catch (error) {
-        console.error('Error procesando factura con IA:', error);
+        console.error('Error procesando documento con IA:', error);
         const upstreamStatus = getErrorStatus(error);
         const responseStatus = upstreamStatus >= 400 && upstreamStatus < 500
             ? upstreamStatus
