@@ -210,9 +210,20 @@ switch ($Action) {
         $apiBase = ([string]$config.apiBaseUrl).TrimEnd('/')
         $headers = @{ Authorization = "Bearer $($config.deviceToken)"; 'X-Device-Name' = ([string]$config.deviceName) }
         $pollSeconds = [Math]::Max(2, [int]$config.pollSeconds)
+        $syncSeconds = if ($config.syncSeconds) { [Math]::Max(30, [int]$config.syncSeconds) } else { 60 }
+        $nextSyncAt = [DateTime]::MinValue
         Write-Host "Agente Facto activo. Impresora: '$resolvedName'."
         while ($true) {
             try {
+                if ((Get-Date) -ge $nextSyncAt) {
+                    try {
+                        Invoke-RestMethod -Uri "$apiBase/api/picking/sync" -Headers $headers -Method Post | Out-Null
+                        $nextSyncAt = (Get-Date).AddSeconds($syncSeconds)
+                    } catch {
+                        $nextSyncAt = (Get-Date).AddSeconds($syncSeconds)
+                        Write-Warning "No se pudieron sincronizar los pedidos recientes: $($_.Exception.Message)"
+                    }
+                }
                 $response = Invoke-WebRequest -UseBasicParsing -Uri "$apiBase/api/printer/jobs/next" -Headers $headers -Method Get
                 if ($response.StatusCode -eq 200 -and $response.Content) {
                     $job = $response.Content | ConvertFrom-Json

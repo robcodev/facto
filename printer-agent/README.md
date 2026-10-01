@@ -49,4 +49,4 @@ Cuando Facto tenga configurada la cola:
 1. Completa `apiBaseUrl` y `deviceToken` en `config.json`.
 2. Haz doble clic en `3-iniciar-agente.cmd`.
 
-El agente consultará trabajos cada cinco segundos. Solo confirmará un trabajo después de enviarlo correctamente a la impresora. El token del dispositivo se guarda únicamente en `config.json`, que está excluido de Git.
+El agente consultará trabajos cada cinco segundos y sincronizará con Bsale cada 60 segundos. Así puede recuperar pedidos aunque una notificación webhook no llegue o llegue antes de que Bsale publique el checkout. Solo confirmará un trabajo después de enviarlo correctamente a la impresora. El token del dispositivo se guarda únicamente en `config.json`, que está excluido de Git.

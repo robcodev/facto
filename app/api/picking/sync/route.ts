@@ -5,7 +5,9 @@ export const runtime = 'nodejs';
 export async function POST(request: Request) {
     try {
         const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-        if (!matchesSecret(token, 'PICKING_SYNC_TOKEN')) return Response.json({ error: 'No autorizado.' }, { status: 401 });
+        const authorized = matchesSecret(token, 'PICKING_SYNC_TOKEN')
+            || matchesSecret(token, 'PRINTER_AGENT_TOKEN');
+        if (!authorized) return Response.json({ error: 'No autorizado.' }, { status: 401 });
         const imported = await importRecentPendingOrders();
         return Response.json({ success: true, imported });
     } catch (error) {

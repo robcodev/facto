@@ -3,6 +3,7 @@
   "portName": "USB001",
   "deviceName": "Bodega POS-8360",
   "pollSeconds": 5,
+  "syncSeconds": 60,
   "apiBaseUrl": "https://facto-livid.vercel.app",
   "deviceToken": ""
 }

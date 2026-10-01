@@ -33,13 +33,16 @@ export async function POST(request: Request) {
     } catch (error) {
         const message = error instanceof Error ? error.message : 'No pudimos procesar la notificación.';
         if (message === INVALID_CHECKOUT_MESSAGE) {
-            console.info('Webhook Bsale aceptado como prueba de activación o recurso no procesable', {
+            console.warn('Webhook Bsale recibido antes de que el checkout estuviera disponible', {
                 cpnId: notification.cpnId ?? null,
                 topic: notification.topic ?? null,
                 resourceId: notification.resourceId ?? null,
                 resource: notification.resource ?? null,
             });
-            return Response.json({ success: true, ignored: true, reason: 'activation-or-invalid-checkout' });
+            return Response.json(
+                { error: 'El checkout todavía no está disponible. Reintente la notificación.' },
+                { status: 503, headers: { 'Retry-After': '15' } },
+            );
         }
         console.error('Error procesando webhook Bsale Venta Online', {
             cpnId: notification.cpnId ?? null,
