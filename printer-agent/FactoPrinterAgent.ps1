@@ -156,19 +156,35 @@ function New-OrderReceipt {
     Add-Bytes $bytes ([byte[]](0x1D, 0x21, 0x00))
     Add-Text $bytes "PAGADO POR GENERAR DTE`n"
     Add-Text $bytes ((Get-Date $Order.createdAt).ToLocalTime().ToString('dd-MM-yyyy HH:mm') + "`n")
+    Add-Text $bytes "PEDIDO WEB: #$($Order.checkoutId)`n"
     Add-Text $bytes "------------------------------------------`n"
     Add-Bytes $bytes ([byte[]](0x1B, 0x61, 0x00))
+    if ($Order.customerName) { Add-WrappedText $bytes ("CLIENTE: " + $Order.customerName) }
+    if ($Order.customerPhone) { Add-WrappedText $bytes ("TELÉFONO: " + $Order.customerPhone) }
+    if ($Order.customerEmail) { Add-WrappedText $bytes ("EMAIL: " + $Order.customerEmail) }
+    if ($Order.pickupStore) {
+        Add-Bytes $bytes ([byte[]](0x1B, 0x45, 0x01))
+        Add-WrappedText $bytes ("RETIRO EN TIENDA: " + $Order.pickupStore)
+        Add-Bytes $bytes ([byte[]](0x1B, 0x45, 0x00))
+    } elseif ($Order.address) { Add-WrappedText $bytes ("DIRECCIÓN: " + $Order.address) }
     if ($Order.shippingMethod) { Add-WrappedText $bytes ("ENVÍO: " + $Order.shippingMethod) }
-    if ($Order.paymentTypeId) { Add-Text $bytes "FORMA DE PAGO BSALE: #$($Order.paymentTypeId)`n" }
+    if ($Order.shippingComment) {
+        Add-Bytes $bytes ([byte[]](0x1B, 0x45, 0x01))
+        Add-WrappedText $bytes ("COMENTARIO: " + $Order.shippingComment)
+        Add-Bytes $bytes ([byte[]](0x1B, 0x45, 0x00))
+    }
+    if ($Order.paymentTypeName) { Add-WrappedText $bytes ("FORMA DE PAGO: " + $Order.paymentTypeName) }
+    elseif ($Order.paymentTypeId) { Add-Text $bytes "FORMA DE PAGO BSALE: #$($Order.paymentTypeId)`n" }
     Add-Text $bytes "------------------------------------------`n"
     foreach ($item in $Order.items) {
         Add-Bytes $bytes ([byte[]](0x1B, 0x45, 0x01))
-        Add-Text $bytes ("$($item.quantity) x $($item.sku)`n")
+        Add-Text $bytes ("[ ] $($item.quantity) x $($item.sku)`n")
         Add-Bytes $bytes ([byte[]](0x1B, 0x45, 0x00))
         Add-WrappedText $bytes ([string]$item.item_name)
         Add-Text $bytes "`n"
     }
     Add-Text $bytes "------------------------------------------`n"
+    Add-Text $bytes ("TOTAL UNIDADES: " + $Order.totalUnits + "`n")
     Add-Bytes $bytes ([byte[]](0x1B, 0x61, 0x02))
     Add-Text $bytes ("TOTAL: `$" + ([decimal]$Order.total).ToString('N0') + "`n")
     Add-Bytes $bytes ([byte[]](0x1B, 0x61, 0x01))

@@ -56,6 +56,18 @@ async function checkoutFromResource(resource: string) {
     }
 }
 
+async function paymentTypeName(paymentTypeId: unknown) {
+    const id = Number(paymentTypeId);
+    if (!Number.isInteger(id) || id <= 0) return null;
+    try {
+        const paymentType = await bsaleGet(`/payment_types/${id}.json`);
+        const name = String(paymentType.name ?? paymentType.description ?? '').trim();
+        return name || null;
+    } catch {
+        return null;
+    }
+}
+
 async function organizationId() {
     const supabase = createAdminClient();
     const { data, error } = await supabase.from('organizations').select('id').eq('slug', ORGANIZATION_SLUG).single();
@@ -137,7 +149,34 @@ export async function claimNextPrintJob(deviceName: string) {
     if (!claimed) return null;
     const { data: order, error: orderError } = await supabase.from('web_orders').select('bsale_checkout_id, document_number, payment_type_id, shipping_method, total, source_created_at, web_order_items(sku,item_name,quantity)').eq('id', claimed.order_id).single();
     if (orderError) throw new Error(orderError.message);
-    return { jobId: Number(claimed.id), order: { checkoutId: Number(order.bsale_checkout_id), documentNumber: Number(order.document_number), paymentTypeId: order.payment_type_id == null ? null : Number(order.payment_type_id), shippingMethod: order.shipping_method, total: Number(order.total), createdAt: order.source_created_at, items: order.web_order_items } };
+    const checkout = await checkoutFromResource(`/checkout/${Number(order.bsale_checkout_id)}.json`);
+    const paymentTypeId = checkout.ptId ?? order.payment_type_id;
+    const customerName = [checkout.clientName, checkout.clientLastName].map((value) => String(value ?? '').trim()).filter(Boolean).join(' ');
+    const streetAddress = [checkout.clientStreet, checkout.clientBuildingNumber].map((value) => String(value ?? '').trim()).filter(Boolean).join(' ');
+    const city = String(checkout.clientCityZone ?? checkout.clientCity ?? '').trim();
+    const region = String(checkout.clientState ?? '').trim();
+    const address = [streetAddress, city, region].filter(Boolean).join(', ');
+    const items = Array.isArray(order.web_order_items) ? order.web_order_items : [];
+    return {
+        jobId: Number(claimed.id),
+        order: {
+            checkoutId: Number(order.bsale_checkout_id),
+            documentNumber: Number(order.document_number),
+            paymentTypeId: paymentTypeId == null ? null : Number(paymentTypeId),
+            paymentTypeName: await paymentTypeName(paymentTypeId),
+            shippingMethod: order.shipping_method,
+            shippingComment: String(checkout.shippingComment ?? '').trim() || null,
+            customerName: customerName || null,
+            customerPhone: String(checkout.clientPhone ?? '').trim() || null,
+            customerEmail: String(checkout.clientEmail ?? '').trim() || null,
+            address: address || null,
+            pickupStore: Number(checkout.withdrawStore ?? 0) === 1 ? String(checkout.storeName ?? 'Retiro en tienda').trim() : null,
+            totalUnits: items.reduce((sum, item) => sum + Number(item.quantity ?? 0), 0),
+            total: Number(order.total),
+            createdAt: order.source_created_at,
+            items,
+        },
+    };
 }
 
 export async function finishPrintJob(jobId: number, success: boolean, errorMessage?: string) {
