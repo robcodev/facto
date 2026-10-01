@@ -17,9 +17,25 @@ const IVA_FACTOR = 1.19;
 const UPDATE_WORKERS = 2;
 const UPDATE_DELAY_MS = 300;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+const EXCLUDED_PRODUCT_TYPES = new Set([
+    'deportes',
+    'proyecto',
+    'full',
+    'fiestas patrias',
+    'sin titulo',
+    'utiles y papeleria',
+]);
 
 function wait(milliseconds: number) {
     return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function normalizedName(value: string) {
+    return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+}
+
+function isExcludedProductType(value: string) {
+    return EXCLUDED_PRODUCT_TYPES.has(normalizedName(value));
 }
 
 function getHeaders() {
@@ -147,7 +163,7 @@ export async function loadPriceComparison(referenceListId: number, editableListI
             const reference = parseDetail(item);
             if (!reference || reference.variantState !== 0 || !reference.sku) continue;
             const product = products.get(reference.productId);
-            if (!product) continue;
+            if (!product || isExcludedProductType(product.typeName)) continue;
             const target = editable.get(reference.variantId);
             rows.push({
                 variantId: reference.variantId,
@@ -192,7 +208,7 @@ export async function loadPriceListProducts(priceListId: number) {
             const detail = parseDetail(item);
             if (!detail || detail.variantState !== 0 || !detail.sku) continue;
             const product = products.get(detail.productId);
-            if (!product) continue;
+            if (!product || isExcludedProductType(product.typeName)) continue;
             rows.push({
                 variantId: detail.variantId,
                 productId: detail.productId,
