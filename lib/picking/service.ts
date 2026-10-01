@@ -39,6 +39,23 @@ function responseData(body: Json) {
     return [body];
 }
 
+async function checkoutFromResource(resource: string) {
+    try {
+        return responseData(await bsaleGet(resource))[0];
+    } catch (resourceError) {
+        const checkoutId = Number(resource.match(/\/checkout\/(\d+)\.json(?:\?.*)?$/)?.[1]);
+        if (!Number.isInteger(checkoutId) || checkoutId <= 0) throw resourceError;
+
+        const first = await bsaleGet('/markets/checkout/list.json?limit=1&offset=0');
+        const count = Number(first.count ?? 0);
+        const offset = Math.max(0, count - 50);
+        const latest = await bsaleGet(`/markets/checkout/list.json?limit=50&offset=${offset}`);
+        const checkout = responseData(latest).find((item) => Number(item.id) === checkoutId);
+        if (!checkout) throw resourceError;
+        return checkout;
+    }
+}
+
 async function organizationId() {
     const supabase = createAdminClient();
     const { data, error } = await supabase.from('organizations').select('id').eq('slug', ORGANIZATION_SLUG).single();
@@ -47,8 +64,7 @@ async function organizationId() {
 }
 
 export async function importCheckout(resource: string) {
-    const checkoutBody = await bsaleGet(resource);
-    const checkout = responseData(checkoutBody)[0];
+    const checkout = await checkoutFromResource(resource);
     const checkoutId = Number(checkout.id);
     const cartId = Number(checkout.cartId);
     const documentNumber = Number(checkout.documentNumber ?? 0);
