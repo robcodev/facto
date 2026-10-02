@@ -1,0 +1,151 @@
+'use server';
+
+import type { WebCatalogGap, WebCatalogOffice, WebCatalogVariant } from './types';
+
+const BSALE_TOKEN = process.env.BSALE_TOKEN;
+const BSALE_ORIGIN = 'https://api.bsale.io';
+const PAGE_SIZE = 50;
+const EXCLUDED_PRODUCT_TYPE_IDS = new Set([1, 48, 49, 53, 54, 69]);
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+type BsaleObject = Record<string, unknown>;
+
+function wait(milliseconds: number) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function headers() {
+    if (!BSALE_TOKEN) throw new Error('Falta configurar BSALE_TOKEN.');
+    return { access_token: BSALE_TOKEN };
+}
+
+async function getJson(path: string) {
+    let lastError = 'Bsale no respondió correctamente.';
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await fetch(`${BSALE_ORIGIN}${path}`, { headers: headers(), cache: 'no-store', signal: AbortSignal.timeout(20000) });
+        const text = await response.text();
+        let body: BsaleObject = {};
+        try { body = text ? JSON.parse(text) as BsaleObject : {}; } catch { body = { raw: text }; }
+        if (response.ok) return body;
+        lastError = String(body.message ?? body.error ?? body.raw ?? response.statusText);
+        if (!RETRYABLE_STATUS.has(response.status) || attempt === 2) break;
+        await wait(500 * (attempt + 1));
+    }
+    throw new Error(lastError);
+}
+
+function pageItems(body: BsaleObject) {
+    if (Array.isArray(body.items)) return body.items as BsaleObject[];
+    if (Array.isArray(body.data)) return body.data as BsaleObject[];
+    return [];
+}
+
+async function getAllPages(path: string) {
+    const separator = path.includes('?') ? '&' : '?';
+    const first = await getJson(`${path}${separator}limit=${PAGE_SIZE}&offset=0`);
+    const count = Number(first.count ?? 0);
+    const pages = [pageItems(first)];
+    const offsets: number[] = [];
+    for (let offset = PAGE_SIZE; offset < count; offset += PAGE_SIZE) offsets.push(offset);
+    for (let start = 0; start < offsets.length; start += 5) {
+        const batch = offsets.slice(start, start + 5);
+        const responses = await Promise.all(batch.map((offset) => getJson(`${path}${separator}limit=${PAGE_SIZE}&offset=${offset}`)));
+        pages.push(...responses.map(pageItems));
+    }
+    return pages.flat();
+}
+
+function nested(value: unknown) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as BsaleObject : null;
+}
+
+function visibleText(value: unknown) {
+    return String(value ?? '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/gi, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export async function getWebCatalogOffices() {
+    try {
+        const items = await getAllPages('/v1/offices.json?state=0');
+        const offices: WebCatalogOffice[] = items.map((item) => ({ id: Number(item.id), name: String(item.name ?? `Sucursal ${item.id}`) }))
+            .filter((office) => Number.isInteger(office.id) && office.id > 0);
+        return { success: true as const, offices };
+    } catch (error) {
+        return { success: false as const, offices: [] as WebCatalogOffice[], error: error instanceof Error ? error.message : 'No pudimos cargar las sucursales.' };
+    }
+}
+
+export async function loadWebCatalogGaps(officeId: number) {
+    try {
+        if (!Number.isInteger(officeId) || officeId <= 0) throw new Error('Sucursal inválida.');
+        const [stockItems, productItems, webItems] = await Promise.all([
+            getAllPages(`/v1/stocks.json?officeid=${officeId}&expand=[variant]`),
+            getAllPages('/v1/products.json?state=0&expand=[product_type,brand]'),
+            getAllPages('/v2/products/list/market_info.json?expand=[collections]'),
+        ]);
+        const brands = new Map<number, string>();
+        for (const item of webItems) {
+            const brand = nested(item.brand);
+            const brandId = Number(brand?.id);
+            const brandName = String(brand?.name ?? '').trim();
+            if (Number.isInteger(brandId) && brandId > 0 && brandName) brands.set(brandId, brandName);
+        }
+
+        const stockByProduct = new Map<number, WebCatalogVariant[]>();
+        for (const item of stockItems) {
+            const available = Number(item.quantityAvailable ?? 0);
+            const variant = nested(item.variant);
+            const product = nested(variant?.product);
+            const productId = Number(product?.id);
+            const variantId = Number(variant?.id);
+            if (!(available > 0) || Number(variant?.state ?? 1) !== 0 || !Number.isInteger(productId) || !Number.isInteger(variantId)) continue;
+            const variants = stockByProduct.get(productId) ?? [];
+            variants.push({ id: variantId, sku: String(variant?.code ?? '').trim(), name: String(variant?.description ?? '').trim(), available });
+            stockByProduct.set(productId, variants);
+        }
+
+        const webByProduct = new Map<number, { hasDescription: boolean; collections: Set<string> }>();
+        for (const item of webItems) {
+            const productId = Number(item.productId);
+            if (!Number.isInteger(productId)) continue;
+            const current = webByProduct.get(productId) ?? { hasDescription: false, collections: new Set<string>() };
+            current.hasDescription ||= visibleText(item.description).length > 0;
+            if (Array.isArray(item.collections)) {
+                for (const collectionValue of item.collections) {
+                    const collection = nested(collectionValue);
+                    if (Number(collection?.state ?? 0) === 1) current.collections.add(String(collection?.name ?? 'Colección').trim());
+                }
+            }
+            webByProduct.set(productId, current);
+        }
+
+        const rows: WebCatalogGap[] = [];
+        for (const item of productItems) {
+            const productId = Number(item.id);
+            const variants = stockByProduct.get(productId);
+            if (!variants?.length || Number(item.state ?? 1) !== 0 || Number(item.classification ?? 0) !== 0) continue;
+            const web = webByProduct.get(productId);
+            const productType = nested(item.product_type);
+            const productTypeId = Number(productType?.id);
+            if (Number.isInteger(productTypeId) && EXCLUDED_PRODUCT_TYPE_IDS.has(productTypeId)) continue;
+            const hasDescription = web?.hasDescription ?? false;
+            const collections = [...(web?.collections ?? new Set<string>())].sort((a, b) => a.localeCompare(b, 'es'));
+            if (hasDescription && collections.length > 0) continue;
+            const brand = nested(item.brand);
+            const brandId = Number(brand?.id);
+            variants.sort((a, b) => a.sku.localeCompare(b.sku, 'es'));
+            rows.push({
+                productId,
+                productName: String(item.name ?? `Producto ${productId}`).trim(),
+                brandName: brands.get(brandId) || (Number.isInteger(brandId) && brandId > 0 ? `Marca ID ${brandId}` : 'Sin marca'),
+                productTypeName: String(productType?.name ?? 'Sin tipo').trim() || 'Sin tipo',
+                available: variants.reduce((sum, variant) => sum + variant.available, 0),
+                reason: hasDescription ? 'missing_collection' : 'missing_description',
+                collections,
+                variants,
+            });
+        }
+        rows.sort((a, b) => b.available - a.available || b.productId - a.productId);
+        return { success: true as const, rows };
+    } catch (error) {
+        return { success: false as const, rows: [] as WebCatalogGap[], error: error instanceof Error ? error.message : 'No pudimos revisar el catálogo web.' };
+    }
+}

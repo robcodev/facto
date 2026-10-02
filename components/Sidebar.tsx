@@ -8,6 +8,7 @@ const navigation = [
     { href: '/reception', label: 'Recepción de Stock' },
     { href: '/full', label: 'Mercado Libre Full' },
     { href: '/prices', label: 'Precios por lotes' },
+    { href: '/web-catalog', label: 'Publicación web' },
     { href: '/picking', label: 'Picking pedidos web' },
     { href: '/labels', label: 'Etiquetas ZPL' },
 ];
