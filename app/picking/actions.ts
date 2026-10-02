@@ -2,6 +2,8 @@
 
 import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
+import { recoverPendingPrintJobs } from '@/lib/picking/service';
+import { revalidatePath } from 'next/cache';
 
 async function requireUser() {
     const authClient = await createClient();
@@ -113,5 +115,16 @@ export async function reprintPickingOrder(orderId: number) {
         return { success: true as const };
     } catch (error) {
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos solicitar la reimpresión.' };
+    }
+}
+
+export async function recoverPendingOrders() {
+    try {
+        await requireUser();
+        const result = await recoverPendingPrintJobs();
+        revalidatePath('/picking');
+        return { success: true as const, ...result };
+    } catch (error) {
+        return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos recuperar los pedidos pendientes.' };
     }
 }

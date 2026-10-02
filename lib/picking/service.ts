@@ -150,6 +150,48 @@ export async function importRecentPendingOrders() {
     return results;
 }
 
+export async function recoverPendingPrintJobs() {
+    const imported = await importRecentPendingOrders();
+    const { supabase, organizationId: orgId } = await organizationId();
+    const stale = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+
+    const { data: staleJobs, error: staleError } = await supabase
+        .from('print_jobs')
+        .update({
+            status: 'pending',
+            attempts: 0,
+            locked_by: null,
+            locked_at: null,
+            last_error: null,
+            updated_at: new Date().toISOString(),
+        })
+        .eq('organization_id', orgId)
+        .eq('status', 'processing')
+        .lt('locked_at', stale)
+        .select('id');
+    if (staleError) throw new Error(staleError.message);
+
+    const { data: failedJobs, error: failedError } = await supabase
+        .from('print_jobs')
+        .update({
+            status: 'pending',
+            attempts: 0,
+            locked_by: null,
+            locked_at: null,
+            last_error: null,
+            updated_at: new Date().toISOString(),
+        })
+        .eq('organization_id', orgId)
+        .eq('status', 'failed')
+        .select('id');
+    if (failedError) throw new Error(failedError.message);
+
+    return {
+        found: imported.filter((result) => result.queued).length,
+        recovered: (staleJobs?.length ?? 0) + (failedJobs?.length ?? 0),
+    };
+}
+
 export async function claimNextPrintJob(deviceName: string) {
     const { supabase, organizationId: orgId } = await organizationId();
     const stale = new Date(Date.now() - 2 * 60 * 1000).toISOString();

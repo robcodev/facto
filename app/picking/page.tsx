@@ -2,6 +2,7 @@ import { getPickingDashboard } from './actions';
 import PickingScanner from './PickingScanner';
 import PickingAutoRefresh from './PickingAutoRefresh';
 import ReprintButton from './ReprintButton';
+import RecoverPendingButton from './RecoverPendingButton';
 import { connection } from 'next/server';
 
 const money = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 });
@@ -17,7 +18,7 @@ export default async function PickingPage() {
     await connection();
     const result = await getPickingDashboard();
     return <div className="mx-auto max-w-[1400px] space-y-6 p-4 sm:p-6 lg:p-8">
-        <header><p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Pedidos web</p><h1 className="mt-1 text-3xl font-bold text-gray-900">Picking e impresión</h1><p className="mt-2 text-sm text-gray-600">Pedidos pagados por generar DTE y estado de sus comandas.</p><div className="mt-2"><PickingAutoRefresh /></div></header>
+        <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start"><div><p className="text-sm font-semibold uppercase tracking-wide text-blue-600">Pedidos web</p><h1 className="mt-1 text-3xl font-bold text-gray-900">Picking e impresión</h1><p className="mt-2 text-sm text-gray-600">Pedidos pagados por generar DTE y estado de sus comandas.</p><div className="mt-2"><PickingAutoRefresh /></div></div><RecoverPendingButton /></header>
         <PickingScanner />
         {!result.success && <div className="rounded-xl border border-amber-300 bg-amber-50 p-5 text-amber-900"><h2 className="font-bold">Configuración pendiente</h2><p className="mt-1 text-sm">{result.error}</p><p className="mt-2 text-sm">Aplica la migración de picking y configura la llave privada de Supabase para habilitar esta pantalla.</p></div>}
         {result.success && result.orders.length === 0 && <div className="rounded-xl border bg-white p-8 text-center shadow-sm"><h2 className="font-bold text-gray-900">Todavía no hay pedidos sincronizados</h2><p className="mt-2 text-sm text-gray-600">Cuando Bsale notifique un pedido pagado por generar DTE, aparecerá aquí y se creará su comanda.</p></div>}
