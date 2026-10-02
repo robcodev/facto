@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
+import type { ReactNode } from 'react';
 import { getProductResearchDraft, saveProductResearchDraft } from './actions';
 import type { ProductResearchDraft, WebCatalogGap } from './types';
 
@@ -73,5 +74,54 @@ export default function ResearchModal({ product, onClose }: { product: WebCatalo
 }
 
 function HtmlEditor({ title, value, onChange, onCopy }: { title: string; value: string; onChange: (value: string) => void; onCopy: () => void }) {
-    return <div className="rounded-xl border"><div className="flex items-center justify-between border-b p-3"><h3 className="font-bold text-gray-900">{title}</h3><button type="button" onClick={onCopy} className="rounded-md border px-3 py-1 text-xs font-semibold">Copiar HTML</button></div><textarea value={value} onChange={(event) => onChange(event.target.value)} rows={18} spellCheck={false} className="block w-full resize-y rounded-b-xl p-3 font-mono text-xs outline-none" /></div>;
+    const [mode, setMode] = useState<'visual' | 'code'>('visual');
+    const visualEditor = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (mode === 'visual' && visualEditor.current && document.activeElement !== visualEditor.current) {
+            visualEditor.current.innerHTML = sanitizePreviewHtml(value);
+        }
+    }, [mode, value]);
+
+    function changeMode(nextMode: 'visual' | 'code') {
+        if (mode === 'visual' && visualEditor.current) onChange(visualEditor.current.innerHTML);
+        setMode(nextMode);
+    }
+
+    return <div className="overflow-hidden rounded-xl border">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b p-3">
+            <h3 className="font-bold text-gray-900">{title}</h3>
+            <button type="button" onClick={onCopy} className="rounded-md border px-3 py-1 text-xs font-semibold">Copiar HTML</button>
+        </div>
+        <div className="flex gap-1 border-b bg-gray-50 px-3 pt-2" role="tablist" aria-label={`Vista de ${title}`}>
+            <EditorTab active={mode === 'visual'} onClick={() => changeMode('visual')}>Vista previa</EditorTab>
+            <EditorTab active={mode === 'code'} onClick={() => changeMode('code')}>Código HTML</EditorTab>
+        </div>
+        {mode === 'visual' ? <>
+            <div
+                ref={visualEditor}
+                contentEditable
+                suppressContentEditableWarning
+                onBlur={(event) => onChange(event.currentTarget.innerHTML)}
+                className="min-h-96 p-5 text-sm leading-7 text-gray-800 outline-none focus:bg-emerald-50/20 [&_h2]:mb-4 [&_h2]:text-xl [&_h2]:font-bold [&_p]:mb-4 [&_table]:w-full [&_td]:border-b [&_td]:p-2 [&_th]:border-b [&_th]:p-2"
+                aria-label={`${title}, edición visual`}
+            />
+            <p className="border-t bg-gray-50 px-3 py-2 text-xs text-gray-500">Puedes hacer clic sobre el contenido y editarlo directamente.</p>
+        </> : <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={18} spellCheck={false} className="block w-full resize-y p-3 font-mono text-xs outline-none" aria-label={`${title}, código HTML`} />}
+    </div>;
+}
+
+function EditorTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+    return <button type="button" role="tab" aria-selected={active} onClick={onClick} className={`rounded-t-md border border-b-0 px-3 py-2 text-xs font-semibold ${active ? 'bg-white text-emerald-800' : 'border-transparent text-gray-500'}`}>{children}</button>;
+}
+
+function sanitizePreviewHtml(value: string) {
+    const documentValue = new DOMParser().parseFromString(value, 'text/html');
+    documentValue.querySelectorAll('script, style, iframe, object, embed, form').forEach((element) => element.remove());
+    documentValue.querySelectorAll('*').forEach((element) => {
+        for (const attribute of Array.from(element.attributes)) {
+            if (attribute.name.toLowerCase().startsWith('on') || /javascript:/i.test(attribute.value)) element.removeAttribute(attribute.name);
+        }
+    });
+    return documentValue.body.innerHTML;
 }
