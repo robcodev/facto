@@ -80,7 +80,7 @@ export default function WebCatalogPage() {
     }
 
     return <main className="mx-auto max-w-[1500px] space-y-5 p-4 sm:p-6 lg:p-8">
-        <header><p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Catálogo web</p><h1 className="mt-1 text-3xl font-bold text-gray-900">Descripciones de productos</h1><p className="mt-2 max-w-3xl text-sm text-gray-600">Productos activos con stock disponible, incluyendo los que ya tienen descripción y colección para que puedas actualizar contenido antiguo.</p></header>
+        <header><p className="text-sm font-semibold uppercase tracking-wide text-emerald-700">Catálogo web</p><h1 className="mt-1 text-3xl font-bold text-gray-900">Descripciones de productos</h1><p className="mt-2 max-w-3xl text-sm text-gray-600">Todos los productos activos, incluyendo los que ya tienen descripción y colección para que puedas actualizar contenido antiguo. El stock de la sucursal permanece visible para priorizarlos.</p></header>
         <section className="flex flex-col gap-3 rounded-xl border bg-white p-4 shadow-sm sm:flex-row sm:items-end">
             <label className="text-sm font-medium text-gray-700">Sucursal<select value={officeId} onChange={(event) => setOfficeId(event.target.value)} className="mt-1 block min-w-64 rounded-md border px-3 py-2"><option value="">Seleccionar…</option>{offices.map((office) => <option key={office.id} value={office.id}>{office.name}</option>)}</select></label>
             <button type="button" onClick={analyze} disabled={isPending || !officeId} className="rounded-md bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-50">{isPending ? 'Revisando Bsale…' : 'Revisar productos'}</button>

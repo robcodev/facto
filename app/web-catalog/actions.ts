@@ -93,8 +93,9 @@ export async function getWebCatalogOffices() {
 export async function loadWebCatalogGaps(officeId: number) {
     try {
         if (!Number.isInteger(officeId) || officeId <= 0) throw new Error('Sucursal inválida.');
-        const [stockItems, productItems, webItems] = await Promise.all([
+        const [stockItems, variantItems, productItems, webItems] = await Promise.all([
             getAllPages(`/v1/stocks.json?officeid=${officeId}&expand=[variant]`),
+            getAllPages('/v1/variants.json?state=0&expand=[product]'),
             getAllPages('/v1/products.json?state=0&expand=[product_type,brand]'),
             getAllPages('/v2/products/list/market_info.json?expand=[collections,descriptions]'),
         ]);
@@ -106,17 +107,23 @@ export async function loadWebCatalogGaps(officeId: number) {
             if (Number.isInteger(brandId) && brandId > 0 && brandName) brands.set(brandId, brandName);
         }
 
-        const stockByProduct = new Map<number, WebCatalogVariant[]>();
+        const availableByVariant = new Map<number, number>();
         for (const item of stockItems) {
             const available = Number(item.quantityAvailable ?? 0);
             const variant = nested(item.variant);
-            const product = nested(variant?.product);
-            const productId = Number(product?.id);
             const variantId = Number(variant?.id);
-            if (!(available > 0) || Number(variant?.state ?? 1) !== 0 || !Number.isInteger(productId) || !Number.isInteger(variantId)) continue;
-            const variants = stockByProduct.get(productId) ?? [];
-            variants.push({ id: variantId, sku: String(variant?.code ?? '').trim(), name: String(variant?.description ?? '').trim(), available });
-            stockByProduct.set(productId, variants);
+            if (!Number.isInteger(variantId)) continue;
+            availableByVariant.set(variantId, (availableByVariant.get(variantId) ?? 0) + available);
+        }
+        const variantsByProduct = new Map<number, WebCatalogVariant[]>();
+        for (const variant of variantItems) {
+            const product = nested(variant.product);
+            const productId = Number(product?.id);
+            const variantId = Number(variant.id);
+            if (Number(variant.state ?? 1) !== 0 || !Number.isInteger(productId) || !Number.isInteger(variantId)) continue;
+            const variants = variantsByProduct.get(productId) ?? [];
+            variants.push({ id: variantId, sku: String(variant.code ?? '').trim(), name: String(variant.description ?? '').trim(), available: availableByVariant.get(variantId) ?? 0 });
+            variantsByProduct.set(productId, variants);
         }
 
         const webByProduct = new Map<number, { id: number | null; hasDescription: boolean; description: string; additionalDescription: string; collections: Set<string> }>();
@@ -145,7 +152,7 @@ export async function loadWebCatalogGaps(officeId: number) {
         const rows: WebCatalogGap[] = [];
         for (const item of productItems) {
             const productId = Number(item.id);
-            const variants = stockByProduct.get(productId);
+            const variants = variantsByProduct.get(productId);
             if (!variants?.length || Number(item.state ?? 1) !== 0 || Number(item.classification ?? 0) !== 0) continue;
             const web = webByProduct.get(productId);
             const productType = nested(item.product_type);
