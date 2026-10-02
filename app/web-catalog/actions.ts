@@ -1,6 +1,8 @@
 'use server';
 
-import type { WebCatalogGap, WebCatalogOffice, WebCatalogVariant } from './types';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { createClient } from '@/lib/supabase/server';
+import type { ProductResearchDraft, ProductResearchFact, WebCatalogGap, WebCatalogOffice, WebCatalogVariant } from './types';
 
 const BSALE_TOKEN = process.env.BSALE_TOKEN;
 const BSALE_ORIGIN = 'https://api.bsale.io';
@@ -102,12 +104,14 @@ export async function loadWebCatalogGaps(officeId: number) {
             stockByProduct.set(productId, variants);
         }
 
-        const webByProduct = new Map<number, { hasDescription: boolean; collections: Set<string> }>();
+        const webByProduct = new Map<number, { hasDescription: boolean; description: string; collections: Set<string> }>();
         for (const item of webItems) {
             const productId = Number(item.productId);
             if (!Number.isInteger(productId)) continue;
-            const current = webByProduct.get(productId) ?? { hasDescription: false, collections: new Set<string>() };
-            current.hasDescription ||= visibleText(item.description).length > 0;
+            const current = webByProduct.get(productId) ?? { hasDescription: false, description: '', collections: new Set<string>() };
+            const description = String(item.description ?? '').trim();
+            current.hasDescription ||= visibleText(description).length > 0;
+            if (!current.description && description) current.description = description;
             if (Array.isArray(item.collections)) {
                 for (const collectionValue of item.collections) {
                     const collection = nested(collectionValue);
@@ -140,6 +144,7 @@ export async function loadWebCatalogGaps(officeId: number) {
                 available: variants.reduce((sum, variant) => sum + variant.available, 0),
                 reason: hasDescription ? 'missing_collection' : 'missing_description',
                 collections,
+                currentDescription: web?.description ?? '',
                 variants,
             });
         }
@@ -147,5 +152,76 @@ export async function loadWebCatalogGaps(officeId: number) {
         return { success: true as const, rows };
     } catch (error) {
         return { success: false as const, rows: [] as WebCatalogGap[], error: error instanceof Error ? error.message : 'No pudimos revisar el catálogo web.' };
+    }
+}
+
+async function requireUser() {
+    const auth = await createClient();
+    const { data: { user }, error } = await auth.auth.getUser();
+    if (error || !user) throw new Error('Debes iniciar sesión.');
+    return user;
+}
+
+async function sharedOrganizationId() {
+    const supabase = createAdminClient();
+    const { data, error } = await supabase.from('organizations').select('id').eq('slug', 'facto-compartido').single();
+    if (error) throw new Error(error.message);
+    return { supabase, organizationId: Number(data.id) };
+}
+
+function normalizeDraft(row: Record<string, unknown>): ProductResearchDraft {
+    return {
+        productId: Number(row.bsale_product_id),
+        productName: String(row.product_name ?? ''),
+        brandName: String(row.brand_name ?? ''),
+        sources: Array.isArray(row.sources) ? row.sources as ProductResearchDraft['sources'] : [],
+        facts: Array.isArray(row.facts) ? row.facts as ProductResearchFact[] : [],
+        warnings: Array.isArray(row.warnings) ? row.warnings.map(String) : [],
+        confidence: row.confidence === 'high' || row.confidence === 'medium' ? row.confidence : 'low',
+        blockOneHtml: String(row.block_one_html ?? ''),
+        blockTwoHtml: String(row.block_two_html ?? ''),
+        status: row.status === 'approved' || row.status === 'needs_review' ? row.status : 'draft',
+        updatedAt: String(row.updated_at ?? ''),
+    };
+}
+
+export async function getProductResearchDraft(productId: number) {
+    try {
+        await requireUser();
+        if (!Number.isInteger(productId) || productId <= 0) throw new Error('Producto inválido.');
+        const { supabase, organizationId } = await sharedOrganizationId();
+        const { data, error } = await supabase.from('product_research_drafts').select('*').eq('organization_id', organizationId).eq('bsale_product_id', productId).maybeSingle();
+        if (error) throw new Error(error.message);
+        return { success: true as const, draft: data ? normalizeDraft(data) : null };
+    } catch (error) {
+        return { success: false as const, draft: null, error: error instanceof Error ? error.message : 'No pudimos cargar el borrador.' };
+    }
+}
+
+export async function saveProductResearchDraft(draft: ProductResearchDraft) {
+    try {
+        const user = await requireUser();
+        if (!Number.isInteger(draft.productId) || draft.productId <= 0) throw new Error('Producto inválido.');
+        if (!['draft', 'needs_review', 'approved'].includes(draft.status)) throw new Error('Estado inválido.');
+        const { supabase, organizationId } = await sharedOrganizationId();
+        const { data, error } = await supabase.from('product_research_drafts').upsert({
+            organization_id: organizationId,
+            bsale_product_id: draft.productId,
+            product_name: draft.productName.slice(0, 240),
+            brand_name: draft.brandName.slice(0, 160),
+            sources: draft.sources.slice(0, 10),
+            facts: draft.facts.slice(0, 40),
+            warnings: draft.warnings.slice(0, 20),
+            confidence: draft.confidence,
+            block_one_html: draft.blockOneHtml.slice(0, 20_000),
+            block_two_html: draft.blockTwoHtml.slice(0, 30_000),
+            status: draft.status,
+            updated_by: user.id,
+            created_by: user.id,
+        }, { onConflict: 'organization_id,bsale_product_id' }).select('*').single();
+        if (error) throw new Error(error.message);
+        return { success: true as const, draft: normalizeDraft(data) };
+    } catch (error) {
+        return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos guardar el borrador.' };
     }
 }

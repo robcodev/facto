@@ -15,5 +15,33 @@ export type WebCatalogGap = {
     available: number;
     reason: 'missing_description' | 'missing_collection';
     collections: string[];
+    currentDescription: string;
     variants: WebCatalogVariant[];
+};
+
+export type ProductResearchSource = {
+    title: string;
+    url: string;
+};
+
+export type ProductResearchFact = {
+    label: string;
+    value: string;
+    confidence: 'low' | 'medium' | 'high';
+    sourceIndexes: number[];
+    accepted: boolean;
+};
+
+export type ProductResearchDraft = {
+    productId: number;
+    productName: string;
+    brandName: string;
+    sources: ProductResearchSource[];
+    facts: ProductResearchFact[];
+    warnings: string[];
+    confidence: 'low' | 'medium' | 'high';
+    blockOneHtml: string;
+    blockTwoHtml: string;
+    status: 'draft' | 'needs_review' | 'approved';
+    updatedAt?: string;
 };

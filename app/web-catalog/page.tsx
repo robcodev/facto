@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from 'react';
 import { downloadExcel } from '@/lib/xlsx';
 import { getWebCatalogOffices, loadWebCatalogGaps } from './actions';
 import type { WebCatalogGap, WebCatalogOffice } from './types';
+import ResearchModal from './ResearchModal';
 
 type ReasonFilter = 'all' | WebCatalogGap['reason'];
 type SortKey = 'stock' | 'newest' | 'name';
@@ -20,6 +21,7 @@ export default function WebCatalogPage() {
     const [page, setPage] = useState(1);
     const [loaded, setLoaded] = useState(false);
     const [error, setError] = useState('');
+    const [selectedProduct, setSelectedProduct] = useState<WebCatalogGap | null>(null);
     const [isPending, startTransition] = useTransition();
 
     useEffect(() => {
@@ -93,14 +95,15 @@ export default function WebCatalogPage() {
                 <select value={type} onChange={(event) => { setType(event.target.value); setPage(1); }} className="rounded-md border px-3 py-2"><option value="">Todos los tipos de producto</option>{types.map((item) => <option key={item}>{item}</option>)}</select>
                 <select value={sort} onChange={(event) => { setSort(event.target.value as SortKey); setPage(1); }} className="rounded-md border px-3 py-2"><option value="stock">Mayor stock primero</option><option value="newest">ID más nuevo primero</option><option value="name">Nombre del producto</option></select>
             </section>
-            {filtered.length === 0 ? <div className="rounded-xl border bg-white p-8 text-center text-gray-600">No hay productos que coincidan con los filtros.</div> : <ProductTable rows={visible} />}
+            {filtered.length === 0 ? <div className="rounded-xl border bg-white p-8 text-center text-gray-600">No hay productos que coincidan con los filtros.</div> : <ProductTable rows={visible} onResearch={setSelectedProduct} />}
             {filtered.length > pageSize && <div className="flex items-center justify-between rounded-xl border bg-white px-4 py-3"><button type="button" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="rounded-md border px-3 py-1.5 text-sm font-semibold disabled:opacity-40">Anterior</button><span className="text-sm text-gray-600">{filtered.length} productos · Página {page} de {pageCount}</span><button type="button" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={page === pageCount} className="rounded-md border px-3 py-1.5 text-sm font-semibold disabled:opacity-40">Siguiente</button></div>}
         </>}
+        {selectedProduct && <ResearchModal product={selectedProduct} onClose={() => setSelectedProduct(null)} />}
     </main>;
 }
 
-function ProductTable({ rows }: { rows: WebCatalogGap[] }) {
-    return <div className="overflow-auto rounded-xl border bg-white shadow-sm"><table className="w-full min-w-[1100px] text-sm"><thead className="bg-gray-50 text-left text-xs uppercase text-gray-500"><tr><th className="px-4 py-3">ID</th><th>Producto</th><th>Marca</th><th>Tipo</th><th>Motivo</th><th>SKU y variantes</th><th className="px-4 text-right">Stock disponible</th></tr></thead><tbody className="divide-y">{rows.map((row) => <tr key={row.productId} className="align-top"><td className="px-4 py-4 font-medium text-gray-500">{row.productId}</td><td className="py-4 font-semibold text-gray-900">{row.productName}</td><td className="py-4">{row.brandName}</td><td className="py-4">{row.productTypeName}</td><td className="py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${row.reason === 'missing_description' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>{row.reason === 'missing_description' ? 'Sin descripción web' : 'Sin colección'}</span></td><td className="py-4"><div className="max-w-md space-y-1">{row.variants.map((variant) => <div key={variant.id} className="flex justify-between gap-4"><span><strong>{variant.sku || 'Sin SKU'}</strong>{variant.name && <span className="text-gray-500"> · {variant.name}</span>}</span><span className="whitespace-nowrap text-gray-500">{number.format(variant.available)}</span></div>)}</div></td><td className="px-4 py-4 text-right text-lg font-bold text-gray-900">{number.format(row.available)}</td></tr>)}</tbody></table></div>;
+function ProductTable({ rows, onResearch }: { rows: WebCatalogGap[]; onResearch: (product: WebCatalogGap) => void }) {
+    return <div className="overflow-auto rounded-xl border bg-white shadow-sm"><table className="w-full min-w-[1200px] text-sm"><thead className="bg-gray-50 text-left text-xs uppercase text-gray-500"><tr><th className="px-4 py-3">ID</th><th>Producto</th><th>Marca</th><th>Tipo</th><th>Motivo</th><th>SKU y variantes</th><th className="text-right">Stock</th><th className="px-4">Descripción</th></tr></thead><tbody className="divide-y">{rows.map((row) => <tr key={row.productId} className="align-top"><td className="px-4 py-4 font-medium text-gray-500">{row.productId}</td><td className="py-4 font-semibold text-gray-900">{row.productName}</td><td className="py-4">{row.brandName}</td><td className="py-4">{row.productTypeName}</td><td className="py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${row.reason === 'missing_description' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>{row.reason === 'missing_description' ? 'Sin descripción web' : 'Sin colección'}</span></td><td className="py-4"><div className="max-w-md space-y-1">{row.variants.map((variant) => <div key={variant.id} className="flex justify-between gap-4"><span><strong>{variant.sku || 'Sin SKU'}</strong>{variant.name && <span className="text-gray-500"> · {variant.name}</span>}</span><span className="whitespace-nowrap text-gray-500">{number.format(variant.available)}</span></div>)}</div></td><td className="py-4 text-right text-lg font-bold text-gray-900">{number.format(row.available)}</td><td className="px-4 py-4"><button type="button" onClick={() => onResearch(row)} className="whitespace-nowrap rounded-md bg-emerald-700 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-800">Investigar y redactar</button></td></tr>)}</tbody></table></div>;
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
