@@ -192,8 +192,16 @@ export async function recoverPendingPrintJobs() {
     };
 }
 
-export async function claimNextPrintJob(deviceName: string) {
+export async function claimNextPrintJob(deviceName: string, agentVersion?: string | null) {
     const { supabase, organizationId: orgId } = await organizationId();
+    await supabase.from('printer_agents').upsert({
+        organization_id: orgId,
+        device_name: deviceName,
+        agent_version: agentVersion || null,
+        last_seen_at: new Date().toISOString(),
+        last_error: null,
+        updated_at: new Date().toISOString(),
+    }, { onConflict: 'organization_id,device_name' });
     const stale = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     await supabase.from('print_jobs').update({ status: 'pending', locked_by: null, locked_at: null }).eq('organization_id', orgId).eq('status', 'processing').lt('locked_at', stale);
     const { data: candidate, error } = await supabase.from('print_jobs').select('id, attempts').eq('organization_id', orgId).in('status', ['pending', 'failed']).lt('attempts', 5).order('created_at').limit(1).maybeSingle();

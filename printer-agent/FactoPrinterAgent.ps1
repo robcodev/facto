@@ -1,5 +1,5 @@
-param(
-    [ValidateSet('list', 'test', 'run')]
+﻿param(
+    [ValidateSet('list', 'test', 'run', 'install', 'uninstall')]
     [string]$Action = 'list',
     [string]$PrinterName = '',
     [string]$PortName = 'USB001',
@@ -7,6 +7,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$AgentVersion = '2.1.0'
+$LogPath = Join-Path $PSScriptRoot 'agent.log'
+$TaskName = 'Facto Printer Agent'
+
+function Write-AgentLog {
+    param([string]$Message, [ValidateSet('INFO', 'WARN', 'ERROR')][string]$Level = 'INFO')
+    if ((Test-Path -LiteralPath $LogPath) -and (Get-Item -LiteralPath $LogPath).Length -gt 2MB) {
+        Move-Item -LiteralPath $LogPath -Destination (Join-Path $PSScriptRoot 'agent.previous.log') -Force
+    }
+    $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Level] $Message"
+    Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
+    if ($Level -eq 'ERROR') { Write-Warning $Message } else { Write-Host $line }
+}
 
 Add-Type -TypeDefinition @'
 using System;
@@ -206,6 +219,22 @@ function Read-AgentConfig {
 }
 
 switch ($Action) {
+    'install' {
+        $scriptPath = Join-Path $PSScriptRoot 'FactoPrinterAgent.ps1'
+        $taskAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Action run"
+        $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $taskSettings = New-ScheduledTaskSettingsSet -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+        Register-ScheduledTask -TaskName $TaskName -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Description 'Imprime automáticamente las preventas pendientes de Facto.' -Force | Out-Null
+        Start-ScheduledTask -TaskName $TaskName
+        Write-Host "Agente instalado. Se iniciará automáticamente con la sesión de Windows."
+        Write-Host "Registro: $LogPath"
+    }
+    'uninstall' {
+        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        }
+        Write-Host 'Inicio automático eliminado.'
+    }
     'list' {
         Get-FactoPrinters | Format-Table -AutoSize
     }
@@ -224,20 +253,33 @@ switch ($Action) {
         if (-not $config.apiBaseUrl -or -not $config.deviceToken) { throw 'Completa apiBaseUrl y deviceToken en config.json.' }
         $resolvedName = Resolve-FactoPrinterName -RequestedName ([string]$config.printerName) -RequestedPort ([string]$config.portName)
         $apiBase = ([string]$config.apiBaseUrl).TrimEnd('/')
-        $headers = @{ Authorization = "Bearer $($config.deviceToken)"; 'X-Device-Name' = ([string]$config.deviceName) }
+        $headers = @{ Authorization = "Bearer $($config.deviceToken)"; 'X-Device-Name' = ([string]$config.deviceName); 'X-Agent-Version' = $AgentVersion }
         $pollSeconds = [Math]::Max(2, [int]$config.pollSeconds)
         $syncSeconds = if ($config.syncSeconds) { [Math]::Max(30, [int]$config.syncSeconds) } else { 60 }
         $nextSyncAt = [DateTime]::MinValue
-        Write-Host "Agente Facto activo. Impresora: '$resolvedName'."
+        $pendingAck = $null
+        Write-AgentLog "Agente Facto $AgentVersion activo. Impresora: '$resolvedName'. API: $apiBase."
         while ($true) {
             try {
+                if ($pendingAck) {
+                    try {
+                        Invoke-RestMethod -Uri "$apiBase/api/printer/jobs/ack" -Headers $headers -Method Post -ContentType 'application/json' -Body $pendingAck.body | Out-Null
+                        Write-AgentLog $pendingAck.successMessage
+                        $pendingAck = $null
+                    } catch {
+                        Write-AgentLog "La impresión física terminó, pero Facto aún no confirma el estado: $($_.Exception.Message)" 'ERROR'
+                        Start-Sleep -Seconds $pollSeconds
+                        continue
+                    }
+                }
                 if ((Get-Date) -ge $nextSyncAt) {
                     try {
-                        Invoke-RestMethod -Uri "$apiBase/api/picking/sync" -Headers $headers -Method Post | Out-Null
+                        $syncResult = Invoke-RestMethod -Uri "$apiBase/api/picking/sync" -Headers $headers -Method Post
                         $nextSyncAt = (Get-Date).AddSeconds($syncSeconds)
+                        Write-AgentLog "Sincronización completada: $(@($syncResult.imported).Count) pedidos revisados."
                     } catch {
                         $nextSyncAt = (Get-Date).AddSeconds($syncSeconds)
-                        Write-Warning "No se pudieron sincronizar los pedidos recientes: $($_.Exception.Message)"
+                        Write-AgentLog "No se pudieron sincronizar los pedidos recientes: $($_.Exception.Message)" 'WARN'
                     }
                 }
                 $response = Invoke-WebRequest -UseBasicParsing -Uri "$apiBase/api/printer/jobs/next" -Headers $headers -Method Get
@@ -246,19 +288,32 @@ switch ($Action) {
                     try {
                         [FactoRawPrinter]::Send($resolvedName, (New-OrderReceipt $job.order), "Facto - preventa $($job.order.documentNumber)")
                         $ack = @{ jobId = [int64]$job.jobId; success = $true } | ConvertTo-Json
-                        Invoke-RestMethod -Uri "$apiBase/api/printer/jobs/ack" -Headers $headers -Method Post -ContentType 'application/json' -Body $ack | Out-Null
-                        Write-Host "Impreso: preventa #$($job.order.documentNumber)"
+                        $pendingAck = @{ body = $ack; successMessage = "Impreso y confirmado: preventa #$($job.order.documentNumber)" }
+                        Invoke-RestMethod -Uri "$apiBase/api/printer/jobs/ack" -Headers $headers -Method Post -ContentType 'application/json' -Body $pendingAck.body | Out-Null
+                        Write-AgentLog $pendingAck.successMessage
+                        $pendingAck = $null
                     } catch {
-                        $ack = @{ jobId = [int64]$job.jobId; success = $false; error = $_.Exception.Message } | ConvertTo-Json
-                        try { Invoke-RestMethod -Uri "$apiBase/api/printer/jobs/ack" -Headers $headers -Method Post -ContentType 'application/json' -Body $ack | Out-Null } catch {}
-                        Write-Warning "Falló la impresión: $($_.Exception.Message)"
+                        if (-not $pendingAck) {
+                            $printError = $_.Exception.Message
+                            $ack = @{ jobId = [int64]$job.jobId; success = $false; error = $printError } | ConvertTo-Json
+                            $pendingAck = @{ body = $ack; successMessage = "Error de impresión registrado para la preventa #$($job.order.documentNumber)." }
+                            try {
+                                Invoke-RestMethod -Uri "$apiBase/api/printer/jobs/ack" -Headers $headers -Method Post -ContentType 'application/json' -Body $pendingAck.body | Out-Null
+                                Write-AgentLog "Falló la impresión de la preventa #$($job.order.documentNumber): $printError" 'ERROR'
+                                $pendingAck = $null
+                            } catch {
+                                Write-AgentLog "Falló la impresión y no pudimos registrar el error: $printError" 'ERROR'
+                            }
+                        } else {
+                            Write-AgentLog "La preventa #$($job.order.documentNumber) se imprimió, pero no pudimos confirmarla en Facto: $($_.Exception.Message)" 'ERROR'
+                        }
                     }
                 }
             } catch {
                 if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 204) {
                     # No hay trabajos pendientes.
                 } else {
-                    Write-Warning "No se pudo consultar Facto: $($_.Exception.Message)"
+                    Write-AgentLog "No se pudo consultar Facto: $($_.Exception.Message)" 'WARN'
                 }
             }
             Start-Sleep -Seconds $pollSeconds

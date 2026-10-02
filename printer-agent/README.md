@@ -50,3 +50,11 @@ Cuando Facto tenga configurada la cola:
 2. Haz doble clic en `3-iniciar-agente.cmd`.
 
 El agente consultará trabajos cada cinco segundos y sincronizará con Bsale cada 60 segundos. Así puede recuperar pedidos aunque una notificación webhook no llegue o llegue antes de que Bsale publique el checkout. Solo confirmará un trabajo después de enviarlo correctamente a la impresora. El token del dispositivo se guarda únicamente en `config.json`, que está excluido de Git.
+
+## Inicio automático y diagnóstico
+
+Después de comprobar que la impresión funciona, ejecuta una vez `4-instalar-inicio-automatico.cmd`. El agente se iniciará oculto cada vez que el usuario abra su sesión de Windows y se reiniciará si el proceso falla.
+
+El archivo `agent.log` registra la sincronización, impresión y confirmación de cada preventa. Si Facto muestra el agente desconectado, revisa las últimas líneas de ese archivo.
+
+Para quitar el inicio automático, ejecuta `5-quitar-inicio-automatico.cmd`.

@@ -1,3 +1,5 @@
 config.json
 bsale-webhook-url.txt
 logs/
+agent.log
+agent.previous.log

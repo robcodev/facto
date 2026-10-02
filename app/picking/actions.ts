@@ -18,9 +18,12 @@ export async function getPickingDashboard() {
         if (organizationError) throw new Error(organizationError.message);
         const { data, error } = await supabase.from('web_orders').select('id,bsale_checkout_id,document_number,pay_process,order_status,shipping_method,total,source_created_at,web_order_items(quantity,picked_quantity),print_jobs(status,attempts,last_error,printed_at)').eq('organization_id', organization.id).order('source_created_at', { ascending: false }).limit(100);
         if (error) throw new Error(error.message);
-        return { success: true as const, orders: data ?? [] };
+        const { data: agents } = await supabase.from('printer_agents').select('device_name,agent_version,last_seen_at,last_error').eq('organization_id', organization.id).order('last_seen_at', { ascending: false }).limit(1);
+        const agent = agents?.[0] ?? null;
+        const agentConnected = Boolean(agent?.last_seen_at && Date.now() - new Date(agent.last_seen_at).getTime() < 20_000);
+        return { success: true as const, orders: data ?? [], agent, agentConnected };
     } catch (error) {
-        return { success: false as const, orders: [], error: error instanceof Error ? error.message : 'No pudimos cargar los pedidos.' };
+        return { success: false as const, orders: [], agent: null, agentConnected: false, error: error instanceof Error ? error.message : 'No pudimos cargar los pedidos.' };
     }
 }
 
@@ -115,6 +118,45 @@ export async function reprintPickingOrder(orderId: number) {
         return { success: true as const };
     } catch (error) {
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos solicitar la reimpresión.' };
+    }
+}
+
+export async function markPickingOrderPrinted(orderId: number) {
+    try {
+        await requireUser();
+        if (!Number.isInteger(orderId) || orderId <= 0) throw new Error('Pedido inválido.');
+
+        const supabase = createAdminClient();
+        const { data: organization, error: organizationError } = await supabase
+            .from('organizations')
+            .select('id')
+            .eq('slug', 'facto-compartido')
+            .single();
+        if (organizationError) throw new Error(organizationError.message);
+
+        const now = new Date().toISOString();
+        const { data: job, error } = await supabase
+            .from('print_jobs')
+            .update({
+                status: 'printed',
+                printed_at: now,
+                locked_by: null,
+                locked_at: null,
+                last_error: null,
+                updated_at: now,
+            })
+            .eq('order_id', orderId)
+            .eq('organization_id', organization.id)
+            .in('status', ['pending', 'processing', 'failed'])
+            .select('id')
+            .maybeSingle();
+        if (error) throw new Error(error.message);
+        if (!job) throw new Error('La preventa ya está marcada como impresa o no tiene un trabajo pendiente.');
+
+        revalidatePath('/picking');
+        return { success: true as const };
+    } catch (error) {
+        return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos marcar la preventa como impresa.' };
     }
 }
 
