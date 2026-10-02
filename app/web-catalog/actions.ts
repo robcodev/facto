@@ -35,6 +35,21 @@ async function getJson(path: string) {
     throw new Error(lastError);
 }
 
+async function putJson(path: string, payload: BsaleObject) {
+    const response = await fetch(`${BSALE_ORIGIN}${path}`, {
+        method: 'PUT',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(20000),
+    });
+    const text = await response.text();
+    let body: BsaleObject = {};
+    try { body = text ? JSON.parse(text) as BsaleObject : {}; } catch { body = { raw: text }; }
+    if (!response.ok) throw new Error(String(body.message ?? body.error ?? body.raw ?? response.statusText));
+    return body;
+}
+
 function pageItems(body: BsaleObject) {
     if (Array.isArray(body.items)) return body.items as BsaleObject[];
     if (Array.isArray(body.data)) return body.data as BsaleObject[];
@@ -81,7 +96,7 @@ export async function loadWebCatalogGaps(officeId: number) {
         const [stockItems, productItems, webItems] = await Promise.all([
             getAllPages(`/v1/stocks.json?officeid=${officeId}&expand=[variant]`),
             getAllPages('/v1/products.json?state=0&expand=[product_type,brand]'),
-            getAllPages('/v2/products/list/market_info.json?expand=[collections]'),
+            getAllPages('/v2/products/list/market_info.json?expand=[collections,descriptions]'),
         ]);
         const brands = new Map<number, string>();
         for (const item of webItems) {
@@ -104,14 +119,20 @@ export async function loadWebCatalogGaps(officeId: number) {
             stockByProduct.set(productId, variants);
         }
 
-        const webByProduct = new Map<number, { hasDescription: boolean; description: string; collections: Set<string> }>();
+        const webByProduct = new Map<number, { id: number | null; hasDescription: boolean; description: string; additionalDescription: string; collections: Set<string> }>();
         for (const item of webItems) {
             const productId = Number(item.productId);
             if (!Number.isInteger(productId)) continue;
-            const current = webByProduct.get(productId) ?? { hasDescription: false, description: '', collections: new Set<string>() };
+            const current = webByProduct.get(productId) ?? { id: null, hasDescription: false, description: '', additionalDescription: '', collections: new Set<string>() };
+            const webId = Number(item.id);
+            if (!current.id && Number.isInteger(webId) && webId > 0) current.id = webId;
             const description = String(item.description ?? '').trim();
             current.hasDescription ||= visibleText(description).length > 0;
             if (!current.description && description) current.description = description;
+            if (Array.isArray(item.descriptions)) {
+                const technical = (item.descriptions as BsaleObject[]).find((descriptionItem) => String(descriptionItem.descriptionName ?? '').trim().toLocaleLowerCase('es') === 'información técnica');
+                if (technical && !current.additionalDescription) current.additionalDescription = String(technical.html ?? '').trim();
+            }
             if (Array.isArray(item.collections)) {
                 for (const collectionValue of item.collections) {
                     const collection = nested(collectionValue);
@@ -132,19 +153,20 @@ export async function loadWebCatalogGaps(officeId: number) {
             if (Number.isInteger(productTypeId) && EXCLUDED_PRODUCT_TYPE_IDS.has(productTypeId)) continue;
             const hasDescription = web?.hasDescription ?? false;
             const collections = [...(web?.collections ?? new Set<string>())].sort((a, b) => a.localeCompare(b, 'es'));
-            if (hasDescription && collections.length > 0) continue;
             const brand = nested(item.brand);
             const brandId = Number(brand?.id);
             variants.sort((a, b) => a.sku.localeCompare(b.sku, 'es'));
             rows.push({
+                webMarketInfoId: web?.id ?? null,
                 productId,
                 productName: String(item.name ?? `Producto ${productId}`).trim(),
                 brandName: brands.get(brandId) || (Number.isInteger(brandId) && brandId > 0 ? `Marca ID ${brandId}` : 'Sin marca'),
                 productTypeName: String(productType?.name ?? 'Sin tipo').trim() || 'Sin tipo',
                 available: variants.reduce((sum, variant) => sum + variant.available, 0),
-                reason: hasDescription ? 'missing_collection' : 'missing_description',
+                reason: !hasDescription ? 'missing_description' : collections.length === 0 ? 'missing_collection' : 'ready',
                 collections,
                 currentDescription: web?.description ?? '',
+                currentAdditionalDescription: web?.additionalDescription ?? '',
                 variants,
             });
         }
@@ -223,5 +245,67 @@ export async function saveProductResearchDraft(draft: ProductResearchDraft) {
         return { success: true as const, draft: normalizeDraft(data) };
     } catch (error) {
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos guardar el borrador.' };
+    }
+}
+
+function validatePublishableHtml(value: string, label: string) {
+    if (!value.trim()) throw new Error(`${label} está vacía.`);
+    if (/<\s*(script|style|iframe|object|embed|form)\b/i.test(value) || /\son\w+\s*=|javascript:/i.test(value)) throw new Error(`${label} contiene HTML no permitido.`);
+}
+
+function canonicalHtml(value: unknown) {
+    return String(value ?? '')
+        .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+        .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 10)))
+        .replace(/&nbsp;/gi, ' ').replace(/&quot;/gi, '"').replace(/&apos;/gi, "'").replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&amp;/gi, '&')
+        .replace(/\s+/g, ' ').trim();
+}
+
+export async function publishProductDescriptions(webMarketInfoId: number | null, draft: ProductResearchDraft) {
+    try {
+        await requireUser();
+        if (!Number.isInteger(webMarketInfoId) || Number(webMarketInfoId) <= 0) throw new Error('Este producto todavía no tiene una ficha web en Bsale. Créala en Bsale antes de publicar las descripciones.');
+        if (!Number.isInteger(draft.productId) || draft.productId <= 0) throw new Error('Producto inválido.');
+        validatePublishableHtml(draft.blockOneHtml, 'La descripción principal');
+        validatePublishableHtml(draft.blockTwoHtml, 'La descripción adicional');
+
+        const currentResponse = await getJson(`/v2/products/market_info/${webMarketInfoId}.json?expand=[descriptions]`);
+        const current = nested(currentResponse.data) ?? currentResponse;
+        if (Number(current.productId) !== draft.productId) throw new Error('La ficha web de Bsale no corresponde al producto seleccionado.');
+        const descriptions = Array.isArray(current.descriptions) ? current.descriptions as BsaleObject[] : [];
+        const technicalIndex = descriptions.findIndex((item) => String(item.descriptionName ?? '').trim().toLocaleLowerCase('es') === 'información técnica');
+        const technical: BsaleObject = {
+            ...(technicalIndex >= 0 && Number.isInteger(Number(descriptions[technicalIndex].id)) ? { id: Number(descriptions[technicalIndex].id) } : {}),
+            descriptionName: 'Información técnica', html: draft.blockTwoHtml, order: technicalIndex >= 0 ? Number(descriptions[technicalIndex].order ?? 0) : descriptions.length, default: 0,
+        };
+        const nextDescriptions = technicalIndex >= 0
+            ? descriptions.map((item, index) => index === technicalIndex ? technical : item)
+            : [...descriptions, technical];
+
+        const originalPayload = {
+            name: String(current.name ?? draft.productName), description: String(current.description ?? ''),
+            displayNotice: String(current.displayNotice ?? ''), descriptions,
+        };
+        await putJson(`/v2/products/market_info/${webMarketInfoId}.json`, {
+            name: String(current.name ?? draft.productName), description: draft.blockOneHtml,
+            displayNotice: String(current.displayNotice ?? ''), descriptions: nextDescriptions,
+        });
+
+        const verificationResponse = await getJson(`/v2/products/market_info/${webMarketInfoId}.json?expand=[descriptions]`);
+        const verification = nested(verificationResponse.data) ?? verificationResponse;
+        const verifiedDescriptions = Array.isArray(verification.descriptions) ? verification.descriptions as BsaleObject[] : [];
+        const verifiedTechnical = verifiedDescriptions.find((item) => String(item.descriptionName ?? '').trim().toLocaleLowerCase('es') === 'información técnica');
+        if (canonicalHtml(verification.description) !== canonicalHtml(draft.blockOneHtml) || canonicalHtml(verifiedTechnical?.html) !== canonicalHtml(draft.blockTwoHtml)) {
+            try {
+                await putJson(`/v2/products/market_info/${webMarketInfoId}.json`, originalPayload);
+                throw new Error('Bsale no guardó correctamente ambos textos, por lo que Facto restauró la descripción anterior. No se aplicaron los cambios.');
+            } catch (rollbackError) {
+                if (rollbackError instanceof Error && rollbackError.message.includes('restauró la descripción anterior')) throw rollbackError;
+                throw new Error('Bsale no guardó correctamente ambos textos y no pudimos confirmar la restauración. Revisa la ficha del producto antes de volver a intentar.');
+            }
+        }
+        return { success: true as const };
+    } catch (error) {
+        return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos publicar las descripciones.' };
     }
 }

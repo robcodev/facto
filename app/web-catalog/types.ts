@@ -8,14 +8,16 @@ export type WebCatalogVariant = {
 };
 
 export type WebCatalogGap = {
+    webMarketInfoId: number | null;
     productId: number;
     productName: string;
     brandName: string;
     productTypeName: string;
     available: number;
-    reason: 'missing_description' | 'missing_collection';
+    reason: 'missing_description' | 'missing_collection' | 'ready';
     collections: string[];
     currentDescription: string;
+    currentAdditionalDescription: string;
     variants: WebCatalogVariant[];
 };
 
