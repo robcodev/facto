@@ -282,7 +282,7 @@ export async function publishProductDescriptions(webMarketInfoId: number | null,
         const descriptions = Array.isArray(current.descriptions) ? current.descriptions as BsaleObject[] : [];
         const technicalIndex = descriptions.findIndex((item) => String(item.descriptionName ?? '').trim().toLocaleLowerCase('es') === 'información técnica');
         const technical: BsaleObject = {
-            ...(technicalIndex >= 0 && Number.isInteger(Number(descriptions[technicalIndex].id)) ? { id: Number(descriptions[technicalIndex].id) } : {}),
+            id: technicalIndex >= 0 && Number.isInteger(Number(descriptions[technicalIndex].id)) ? Number(descriptions[technicalIndex].id) : 0,
             descriptionName: 'Información técnica', html: draft.blockTwoHtml, order: technicalIndex >= 0 ? Number(descriptions[technicalIndex].order ?? 0) : descriptions.length, default: 0,
         };
         const nextDescriptions = technicalIndex >= 0
@@ -313,6 +313,7 @@ export async function publishProductDescriptions(webMarketInfoId: number | null,
         }
         return { success: true as const };
     } catch (error) {
+        console.error('Error publicando descripciones en Bsale:', error);
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos publicar las descripciones.' };
     }
 }
