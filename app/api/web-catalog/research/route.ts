@@ -5,7 +5,20 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 180;
+
+const RESEARCH_MODELS = [
+    { name: 'gemini-3.8-flash', timeout: 70_000 },
+    { name: 'gemini-3.7-flash', timeout: 55_000 },
+    { name: 'gemini-3.6-flash', timeout: 40_000 },
+] as const;
+
+class ResearchUnavailableError extends Error {
+    constructor() {
+        super('Gemini está demorando más de lo normal. Intenta nuevamente en unos minutos; tu borrador anterior no fue modificado.');
+        this.name = 'ResearchUnavailableError';
+    }
+}
 
 const requestSchema = z.object({
     productId: z.number().int().positive(), productName: z.string().trim().min(2).max(240),
@@ -47,6 +60,47 @@ function validateHtml(blockOne: string, blockTwo: string) {
     if (!blockTwo.includes('Contenido original de Multisport Pescaza')) throw new Error('Falta el aviso de contenido original.');
 }
 
+function isRetryableGeminiError(error: unknown) {
+    if (!(error instanceof Error)) return false;
+    const message = `${error.name} ${error.message}`.toLowerCase();
+    return ['abort', 'timeout', 'timed out', 'deadline', 'gateway', 'retryable', 'service unavailable', 'overloaded', '429', '500', '502', '503', '504']
+        .some((value) => message.includes(value));
+}
+
+async function generateResearch(apiKey: string, prompt: string) {
+    let lastError: unknown;
+
+    for (const [index, model] of RESEARCH_MODELS.entries()) {
+        try {
+            const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: model.timeout, retryOptions: { attempts: 1 } } });
+            const response = await ai.models.generateContent({ model: model.name, contents: prompt, config: {
+                tools: [{ googleSearch: {} }],
+                responseMimeType: 'application/json',
+                maxOutputTokens: 10_000,
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        confidence: { type: Type.STRING, enum: ['low', 'medium', 'high'] },
+                        sources: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, url: { type: Type.STRING } }, required: ['title', 'url'] } },
+                        facts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { label: { type: Type.STRING }, value: { type: Type.STRING }, confidence: { type: Type.STRING, enum: ['low', 'medium', 'high'] }, sourceIndexes: { type: Type.ARRAY, items: { type: Type.INTEGER } }, accepted: { type: Type.BOOLEAN } }, required: ['label', 'value', 'confidence', 'sourceIndexes', 'accepted'] } },
+                        warnings: { type: Type.ARRAY, items: { type: Type.STRING } }, blockOneHtml: { type: Type.STRING }, blockTwoHtml: { type: Type.STRING }, status: { type: Type.STRING, enum: ['draft', 'needs_review'] },
+                    }, required: ['confidence', 'sources', 'facts', 'warnings', 'blockOneHtml', 'blockTwoHtml', 'status'],
+                },
+            } });
+            if (!response.text) throw new Error('La IA no devolvió contenido.');
+            return resultSchema.parse(JSON.parse(response.text));
+        } catch (error) {
+            lastError = error;
+            console.error(`Error investigando producto con ${model.name} (intento ${index + 1}):`, error);
+            if (!isRetryableGeminiError(error) || index === RESEARCH_MODELS.length - 1) break;
+            await new Promise((resolve) => setTimeout(resolve, 750 * (index + 1)));
+        }
+    }
+
+    if (isRetryableGeminiError(lastError)) throw new ResearchUnavailableError();
+    throw lastError instanceof Error ? lastError : new Error('La IA no pudo generar la investigación.');
+}
+
 export async function POST(request: Request) {
     try {
         const auth = await createClient();
@@ -57,20 +111,7 @@ export async function POST(request: Request) {
         const identifiers = product.variants.map((variant) => ({ sku: variant.sku, model: variant.name })).filter((item) => item.sku || item.model);
         const prompt = `${MASTER_RULES}\n\nInvestiga este producto en internet y genera un borrador:\n${JSON.stringify({ idBsale: product.productId, nombre: product.productName, marca: product.brandName, tipo: product.productTypeName, identificadores: identifiers, descripcionActualBsale: product.currentDescription || null })}\n\nNo confundas modelos parecidos. Si una fuente oficial no relaciona inequívocamente el modelo o SKU, indícalo como advertencia. La descripción actual de Bsale sirve solo como antecedente y no como fuente externa.`;
 
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 52_000, retryOptions: { attempts: 1 } } });
-        const response = await ai.models.generateContent({ model: 'gemini-3.8-flash', contents: prompt, config: {
-            tools: [{ googleSearch: {} }], responseMimeType: 'application/json', responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    confidence: { type: Type.STRING, enum: ['low', 'medium', 'high'] },
-                    sources: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, url: { type: Type.STRING } }, required: ['title', 'url'] } },
-                    facts: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { label: { type: Type.STRING }, value: { type: Type.STRING }, confidence: { type: Type.STRING, enum: ['low', 'medium', 'high'] }, sourceIndexes: { type: Type.ARRAY, items: { type: Type.INTEGER } }, accepted: { type: Type.BOOLEAN } }, required: ['label', 'value', 'confidence', 'sourceIndexes', 'accepted'] } },
-                    warnings: { type: Type.ARRAY, items: { type: Type.STRING } }, blockOneHtml: { type: Type.STRING }, blockTwoHtml: { type: Type.STRING }, status: { type: Type.STRING, enum: ['draft', 'needs_review'] },
-                }, required: ['confidence', 'sources', 'facts', 'warnings', 'blockOneHtml', 'blockTwoHtml', 'status'],
-            },
-        } });
-        if (!response.text) throw new Error('La IA no devolvió contenido.');
-        const generated = resultSchema.parse(JSON.parse(response.text));
+        const generated = await generateResearch(process.env.GEMINI_API_KEY, prompt);
         generated.sources = safeSources(generated.sources);
         generated.facts = generated.facts.map((fact) => ({ ...fact, sourceIndexes: fact.sourceIndexes.filter((index) => index < generated.sources.length) }));
         validateHtml(generated.blockOneHtml, generated.blockTwoHtml);
@@ -88,6 +129,7 @@ export async function POST(request: Request) {
     } catch (error) {
         console.error('Error investigando producto:', error);
         if (error instanceof z.ZodError) return NextResponse.json({ error: 'Los datos de investigación no tienen el formato esperado.' }, { status: 422 });
+        if (error instanceof ResearchUnavailableError) return NextResponse.json({ error: error.message, retryable: true }, { status: 503 });
         return NextResponse.json({ error: error instanceof Error ? error.message : 'No pudimos investigar el producto.' }, { status: 500 });
     }
 }
