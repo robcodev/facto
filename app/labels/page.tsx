@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { DOTS_PER_MM, getLabelSize, setLabelSize, summarizeZpl } from '@/lib/zpl/parser';
+import { PreviewTask, printOnce } from '@/lib/zpl/preview-lifecycle';
 import type { RenderLabelError, RenderLabelRequest, ZplDocumentSummary } from './types';
 
 const INITIAL_WIDTH_MM = 60;
@@ -15,10 +16,13 @@ const INITIAL_ZPL = `^XA
 ^XZ`;
 
 export default function LabelsPage() {
+    const previewTask = useRef(new PreviewTask());
+    const editRevision = useRef(0);
+    const openedPrint = useRef<{ url: string; window: Window } | null>(null);
     const [zpl, setZpl] = useState(INITIAL_ZPL);
-    const [widthMm, setWidthMm] = useState(INITIAL_WIDTH_MM);
-    const [heightMm, setHeightMm] = useState(INITIAL_HEIGHT_MM);
-    const [contentScalePercent, setContentScalePercent] = useState(INITIAL_CONTENT_SCALE_PERCENT);
+    const [widthMm, setWidthMm] = useState<number | ''>(INITIAL_WIDTH_MM);
+    const [heightMm, setHeightMm] = useState<number | ''>(INITIAL_HEIGHT_MM);
+    const [contentScalePercent, setContentScalePercent] = useState<number | ''>(INITIAL_CONTENT_SCALE_PERCENT);
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -39,12 +43,25 @@ export default function LabelsPage() {
         };
     }, [pdfUrl]);
 
-    const updateDimensions = (nextWidthMm: number, nextHeightMm: number) => {
+    useEffect(() => {
+        const task = previewTask.current;
+        return () => task.cancel();
+    }, []);
+
+    const invalidatePreview = () => {
+        editRevision.current += 1;
+        previewTask.current.cancel();
+        setLoading(false);
+        setPdfUrl(null);
+        setError(null);
+    };
+
+    const updateDimensions = (nextWidthMm: number | '', nextHeightMm: number | '') => {
         setWidthMm(nextWidthMm);
         setHeightMm(nextHeightMm);
-        setPdfUrl(null);
+        invalidatePreview();
 
-        if (nextWidthMm > 0 && nextHeightMm > 0) {
+        if (nextWidthMm !== '' && nextHeightMm !== '' && nextWidthMm > 0 && nextHeightMm > 0) {
             try {
                 setZpl((current) => setLabelSize(current, nextWidthMm, nextHeightMm));
             } catch {
@@ -57,8 +74,11 @@ export default function LabelsPage() {
         const file = event.target.files?.[0];
         if (!file) return;
 
+        invalidatePreview();
+        const revision = editRevision.current;
         try {
             const contents = await file.text();
+            if (revision !== editRevision.current) return;
             const detected = getLabelSize(contents);
 
             if (detected.widthDots && detected.heightDots) {
@@ -67,21 +87,27 @@ export default function LabelsPage() {
             }
 
             setZpl(contents);
-            setPdfUrl(null);
+            invalidatePreview();
             setError(null);
         } catch {
+            if (revision !== editRevision.current) return;
             setError('No se pudo leer el archivo seleccionado.');
         }
     };
 
     const generatePreview = async () => {
+        if (loading || widthMm === '' || heightMm === '' || contentScalePercent === '' || widthMm <= 0 || heightMm <= 0 || contentScalePercent < 25 || contentScalePercent > 300 || !analysis.summary) return;
+        const task = previewTask.current.begin();
+        if (!task) return;
         setLoading(true);
+        setPdfUrl(null);
         setError(null);
 
         try {
             const payload: RenderLabelRequest = { zpl, widthMm, heightMm, contentScalePercent };
             const response = await fetch('/api/labels/render', {
                 method: 'POST',
+                signal: task.signal,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
@@ -91,26 +117,36 @@ export default function LabelsPage() {
                 throw new Error(result?.error || 'No se pudo generar el PDF.');
             }
 
-            const nextPdfUrl = URL.createObjectURL(await response.blob());
+            const pdf = await response.blob();
+            if (!previewTask.current.isCurrent(task)) return;
+            const nextPdfUrl = URL.createObjectURL(pdf);
             setPdfUrl(nextPdfUrl);
         } catch (previewError) {
+            if (!previewTask.current.isCurrent(task)) return;
             setError(previewError instanceof Error ? previewError.message : 'No se pudo generar el PDF.');
         } finally {
-            setLoading(false);
+            if (previewTask.current.finish(task)) setLoading(false);
         }
     };
 
     const printLabel = () => {
-        if (!pdfUrl) return;
+        if (!pdfUrl || loading) return;
 
+        const previous = openedPrint.current;
+        if (previous?.url === pdfUrl && !previous.window.closed) {
+            previous.window.focus();
+            return;
+        }
         const printWindow = window.open(pdfUrl, '_blank');
         if (!printWindow) {
             setError('El navegador bloqueó la ventana de impresión. Habilita las ventanas emergentes e inténtalo otra vez.');
             return;
         }
 
-        printWindow.addEventListener('load', () => printWindow.print(), { once: true });
-        window.setTimeout(() => printWindow.print(), 1000);
+        openedPrint.current = { url: pdfUrl, window: printWindow };
+        const requestPrint = printOnce(printWindow);
+        printWindow.addEventListener('load', requestPrint, { once: true });
+        window.setTimeout(requestPrint, 1000);
     };
 
     return (
@@ -135,7 +171,7 @@ export default function LabelsPage() {
                                 min="1"
                                 step="0.1"
                                 value={widthMm}
-                                onChange={(event) => updateDimensions(Number(event.target.value), heightMm)}
+                                onChange={(event) => updateDimensions(event.target.value === '' ? '' : Number(event.target.value), heightMm)}
                                 className="w-full rounded-md border px-3 py-2 text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
                             />
                         </label>
@@ -146,7 +182,7 @@ export default function LabelsPage() {
                                 min="1"
                                 step="0.1"
                                 value={heightMm}
-                                onChange={(event) => updateDimensions(widthMm, Number(event.target.value))}
+                                onChange={(event) => updateDimensions(widthMm, event.target.value === '' ? '' : Number(event.target.value))}
                                 className="w-full rounded-md border px-3 py-2 text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
                             />
                         </label>
@@ -159,8 +195,8 @@ export default function LabelsPage() {
                                 step="5"
                                 value={contentScalePercent}
                                 onChange={(event) => {
-                                    setContentScalePercent(Number(event.target.value));
-                                    setPdfUrl(null);
+                                    setContentScalePercent(event.target.value === '' ? '' : Number(event.target.value));
+                                    invalidatePreview();
                                 }}
                                 className="w-full rounded-md border px-3 py-2 text-gray-800 outline-none focus:ring-2 focus:ring-blue-500"
                             />
@@ -175,7 +211,7 @@ export default function LabelsPage() {
                                 type="button"
                                 onClick={() => {
                                     setContentScalePercent(scale);
-                                    setPdfUrl(null);
+                                    invalidatePreview();
                                 }}
                                 className={`rounded border px-2 py-1 transition ${
                                     contentScalePercent === scale
@@ -204,7 +240,7 @@ export default function LabelsPage() {
                             value={zpl}
                             onChange={(event) => {
                                 setZpl(event.target.value);
-                                setPdfUrl(null);
+                                invalidatePreview();
                             }}
                             spellCheck={false}
                             rows={16}
@@ -236,6 +272,8 @@ export default function LabelsPage() {
 
                     {error && <p role="alert" className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
+                    <p role="status" className="text-sm text-gray-600">{loading ? 'Generando la vista previa. Si editas la etiqueta, se descartará este resultado.' : 'Los cambios requieren una nueva vista previa antes de imprimir.'}</p>
+                    <p className="text-sm text-gray-600">Completa ancho y alto mayores que cero y una escala entre 25 y 300 %. Genera la vista previa antes de imprimir.</p>
                     <div className="flex flex-wrap gap-3">
                         <button
                             type="button"
@@ -243,6 +281,7 @@ export default function LabelsPage() {
                             disabled={
                                 loading ||
                                 !analysis.summary ||
+                                widthMm === '' || heightMm === '' || contentScalePercent === '' ||
                                 widthMm <= 0 ||
                                 heightMm <= 0 ||
                                 contentScalePercent < 25 ||
@@ -252,7 +291,7 @@ export default function LabelsPage() {
                         >
                             {loading && analysis.summary
                                 ? `Generando PDF de ${analysis.summary.totalLabelCount} etiquetas…`
-                                : 'Generar preview'}
+                                : 'Generar vista previa'}
                         </button>
                         <button
                             type="button"
@@ -267,16 +306,16 @@ export default function LabelsPage() {
 
                 <section className="flex min-h-[620px] flex-col overflow-hidden rounded-lg border bg-white shadow-sm">
                     <div className="border-b bg-gray-50 px-5 py-4">
-                        <h2 className="font-semibold text-gray-700">Preview PDF</h2>
+                        <h2 className="font-semibold text-gray-700">Vista previa PDF</h2>
                         <p className="mt-1 text-xs text-gray-500">
-                            Papel {widthMm || 0} × {heightMm || 0} mm · contenido {contentScalePercent || 0} % · impresión 100 %.
+                            Papel {widthMm === '' ? 'Pendiente' : widthMm} × {heightMm === '' ? 'Pendiente' : heightMm} mm · contenido {contentScalePercent === '' ? 'Pendiente' : contentScalePercent} % · impresión 100 %.
                         </p>
                     </div>
                     {pdfUrl ? (
                         <iframe title="Vista previa de la etiqueta" src={pdfUrl} className="min-h-[560px] flex-1 bg-gray-100" />
                     ) : (
                         <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-gray-400">
-                            Genera un preview para ver aquí la etiqueta renderizada.
+                            Genera una vista previa para revisar la etiqueta antes de imprimir.
                         </div>
                     )}
                 </section>

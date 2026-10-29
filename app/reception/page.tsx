@@ -247,7 +247,9 @@ export default function RecepcionPage() {
     return (
         <div className="max-w-5xl mx-auto p-6 space-y-8">
             <header className="border-b pb-4">
-                <h1 className="text-2xl font-bold text-gray-800">Recepción de Stock </h1>
+                <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-blue-700">Ingreso de mercadería</p>
+                <h1 className="text-2xl font-bold text-gray-800">Recepción de stock</h1>
+                <p className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-600">Carga el documento, revisa los productos y confirma la recepción en Bsale cuando todo esté correcto.</p>
             </header>
 
             {/* PASO 1: Subida de Archivos y Botón de Inicio Manual siempre visible */}
@@ -262,8 +264,12 @@ export default function RecepcionPage() {
                         <option value="OTRO">Otro</option>
                     </select>
                 </label>
-                <div className="flex items-center space-x-4">
+                <div className="facto-upload space-y-3">
+                    <label htmlFor="reception-document-upload" className="block text-sm font-semibold text-slate-800">Documento del proveedor</label>
+                    <p id="reception-upload-help" className="text-xs leading-relaxed text-slate-500">PDF o imágenes · Puedes elegir varios archivos, hasta 4 MB en total.</p>
                     <input
+                        id="reception-document-upload"
+                        aria-describedby="reception-upload-help"
                         type="file"
                         accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf"
                         multiple
