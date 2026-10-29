@@ -14,6 +14,15 @@ const operational: NavItem[] = [
     { href: '/picking', label: 'Picking pedidos web', icon: 'check' },
     { href: '/labels', label: 'Etiquetas ZPL', icon: 'printer' },
 ];
+const commercial: NavItem[] = [
+    { href: '/intel', label: 'Intel', icon: 'database' },
+    { href: '/intelligence', label: 'Inteligencia comercial', icon: 'chart' },
+    { href: '/marketing', label: 'Marketing', icon: 'spark' },
+];
+const finance: NavItem[] = [
+    { href: '/suppliers', label: 'Proveedores y pagos', icon: 'people' },
+    { href: '/cash', label: 'Caja y gastos', icon: 'wallet' },
+];
 const activePath = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 const paths: Record<string, string> = {
     box: 'M3 7 12 3l9 4v10l-9 4-9-4V7Zm0 0 9 4 9-4M12 11v10M7.5 5l9 4',
@@ -36,6 +45,18 @@ function Icon({ name }: { name: string }) {
 function NavigationLink({ item, pathname }: { item: NavItem; pathname: string }) {
     return <Link href={item.href} aria-current={activePath(pathname, item.href) ? 'page' : undefined} className="facto-nav-link"><Icon name={item.icon} /><span>{item.label}</span></Link>;
 }
+function Collection({ id, label, icon, items, pathname }: { id: string; label: string; icon: string; items: NavItem[]; pathname: string }) {
+    const active = items.some(item => activePath(pathname, item.href));
+    const [expansion, setExpansion] = useState({ pathname, open: active });
+    if (expansion.pathname !== pathname) setExpansion({ pathname, open: active || expansion.open });
+    return <div className="facto-collection">
+        <button type="button" className="facto-nav-link facto-collection-toggle" aria-expanded={expansion.open} aria-controls={id} onClick={() => setExpansion(value => ({ pathname, open: !value.open }))}>
+            <Icon name={icon} /><span>{label}</span>
+            <svg aria-hidden="true" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className={`ml-auto h-3 w-3 transition-transform ${expansion.open ? 'rotate-180' : ''}`}><path d="m4 6 4 4 4-4" /></svg>
+        </button>
+        <div id={id} hidden={!expansion.open} role="group" aria-label={label} className="facto-nav-children">{items.map(item => <NavigationLink key={item.href} item={item} pathname={pathname} />)}</div>
+    </div>;
+}
 export default function Sidebar() {
     const pathname = usePathname();
     const [mobileOpen, setMobileOpen] = useState(false);
@@ -49,6 +70,9 @@ export default function Sidebar() {
             <nav aria-label="Aplicaciones" className="facto-navigation" onClick={event => { if ((event.target as Element).closest('a')) setMobileOpen(false); }}>
                 <p className="facto-nav-heading">Operaciones</p>
                 {operational.map(item => <NavigationLink key={item.href} item={item} pathname={pathname} />)}
+                <p className="facto-nav-heading mt-6">Gestión del negocio</p>
+                <Collection id="commercial-data-navigation" label="Datos comerciales" icon="chart" items={commercial} pathname={pathname} />
+                <Collection id="finance-navigation" label="Finanzas" icon="money" items={finance} pathname={pathname} />
             </nav>
             <form action={logout} className="facto-sidebar-footer"><button type="submit" className="facto-nav-link w-full"><Icon name="logout" /><span>Cerrar sesión</span></button></form>
         </div>

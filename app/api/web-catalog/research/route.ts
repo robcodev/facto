@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
+import { PRODUCT_RESEARCH_RULES, PRODUCT_RESEARCH_PROMPT_VERSION } from '@/lib/product-research-prompt';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
@@ -35,14 +36,6 @@ const resultSchema = z.object({
     blockOneHtml: z.string().min(1).max(20_000), blockTwoHtml: z.string().min(1).max(30_000),
     status: z.enum(['draft', 'needs_review']),
 });
-
-const MASTER_RULES = `Redacta para Multisport Pescaza en español natural usado en Chile. Prioriza calidad y densidad de información; no agregues relleno.
-Usa exclusivamente información respaldada por los datos del producto o las fuentes encontradas. No inventes materiales, tecnologías, medidas, resistencias, capacidades, usos, especies objetivo ni beneficios.
-Prioriza: fabricante oficial, documentación oficial, distribuidor autorizado y comercio especializado confiable. Si las fuentes se contradicen, adviértelo y no resuelvas arbitrariamente.
-No uses lenguaje publicitario vacío, llamados a la acción, conclusiones, comparaciones con otras marcas ni keyword stuffing.
-BLOQUE 1: HTML con exactamente un <h2> en mayúsculas y exactamente dos <p>. Sin listas, tablas ni <h3>. El primer párrafo explica qué es, para qué sirve y su diferencia principal. El segundo profundiza solo en funcionamiento, construcción o ventajas técnicas confirmadas.
-BLOQUE 2: comienza directamente con <div class="container-fluid px-0 my-4"> y una tabla Bootstrap table-borderless. Incluye solo especificaciones confirmadas; omite datos desconocidos y no uses N/D. Alterna filas con class="bg-light". Si hay variantes técnicas diferentes, puedes agregar primero una tabla comparativa Bootstrap. Finaliza exactamente con <p style="display:none;">Contenido original de Multisport Pescaza - prohibida su reproducci&oacute;n.</p>.
-Cada característica debe indicar fuentes mediante índices basados en cero respecto de sources. accepted debe ser false cuando la confianza sea low o exista contradicción. Usa needs_review si queda cualquier advertencia material o dato esencial sin confirmar.`;
 
 function safeSources(value: z.infer<typeof resultSchema>['sources']) {
     const seen = new Set<string>();
@@ -109,7 +102,7 @@ export async function POST(request: Request) {
         if (!process.env.GEMINI_API_KEY) throw new Error('Falta configurar GEMINI_API_KEY.');
         const product = requestSchema.parse(await request.json());
         const identifiers = product.variants.map((variant) => ({ sku: variant.sku, model: variant.name })).filter((item) => item.sku || item.model);
-        const prompt = `${MASTER_RULES}\n\nInvestiga este producto en internet y genera un borrador:\n${JSON.stringify({ idBsale: product.productId, nombre: product.productName, marca: product.brandName, tipo: product.productTypeName, identificadores: identifiers, descripcionActualBsale: product.currentDescription || null })}\n\nNo confundas modelos parecidos. Si una fuente oficial no relaciona inequívocamente el modelo o SKU, indícalo como advertencia. La descripción actual de Bsale sirve solo como antecedente y no como fuente externa.`;
+        const prompt = `${PRODUCT_RESEARCH_RULES}\n\nInvestiga este producto en internet y genera un borrador:\n${JSON.stringify({ idBsale: product.productId, nombre: product.productName, marca: product.brandName, tipo: product.productTypeName, identificadores: identifiers, descripcionActualBsale: product.currentDescription || null })}\n\nNo confundas modelos parecidos. Si una fuente oficial no relaciona inequívocamente el modelo o SKU, indícalo como advertencia. La descripción actual de Bsale sirve solo como antecedente y no como fuente externa.`;
 
         const generated = await generateResearch(process.env.GEMINI_API_KEY, prompt);
         generated.sources = safeSources(generated.sources);
@@ -122,7 +115,7 @@ export async function POST(request: Request) {
         const { data: saved, error: saveError } = await supabase.from('product_research_drafts').upsert({
             organization_id: Number(organization.id), bsale_product_id: product.productId, product_name: product.productName, brand_name: product.brandName,
             product_snapshot: product, sources: generated.sources, facts: generated.facts, warnings: generated.warnings, confidence: generated.confidence,
-            block_one_html: generated.blockOneHtml, block_two_html: generated.blockTwoHtml, status: generated.status, prompt_version: 'multisport-v1', created_by: user.id, updated_by: user.id,
+            block_one_html: generated.blockOneHtml, block_two_html: generated.blockTwoHtml, status: generated.status, prompt_version: PRODUCT_RESEARCH_PROMPT_VERSION, created_by: user.id, updated_by: user.id,
         }, { onConflict: 'organization_id,bsale_product_id' }).select('updated_at').single();
         if (saveError) throw new Error(saveError.message);
         return NextResponse.json({ draft: { productId: product.productId, productName: product.productName, brandName: product.brandName, ...generated, updatedAt: saved.updated_at } });

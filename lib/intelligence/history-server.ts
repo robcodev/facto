@@ -1,0 +1,38 @@
+import 'server-only';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { analyzeHistory,historyCoverage,type HistoryBasket,type HistoryWindow } from './history-core';
+type Context={db:SupabaseClient;orgId:number};
+const num=(v:unknown)=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))?Number(v):null;
+const yes=(v:unknown)=>[true,1,'1','true'].includes(v as never);
+export type SourceRow={external_id:string;run_id:string;name?:string;product_id?:string|null;day?:string;from?:string;to?:string;reconciliation?:string;sourceCount?:unknown;importedCount?:unknown;excludedCount?:unknown;code?:unknown;documentType?:string;state?:unknown;complete?:unknown;cancellationStatus?:unknown;cancellationDate?:unknown;isCreditNote?:unknown;documentId?:string;variantId?:string;quantity?:unknown;net?:unknown};
+export async function scan(ctx:Context,resource:string,projection:string,cap:number,runId?:string){
+ const rows:SourceRow[]=[];let cursor='';
+ for(;;){let q=ctx.db.from('intel_records').select('external_id,run_id,'+projection).eq('organization_id',ctx.orgId).eq('source','bsale').eq('resource',resource).order('external_id').limit(1000);if(resource.startsWith('sales_'))q=q.like('resource','sales_%');if(runId)q=q.eq('run_id',runId);if(cursor)q=q.gt('external_id',cursor);const r=await q;if(r.error)throw Error('No pudimos leer el historial de '+resource+': '+r.error.message);const page=r.data as unknown as SourceRow[];rows.push(...page);if(rows.length>cap)throw Error('El historial supera el límite de '+resource+'. No se mostrará una muestra parcial como completa.');if(page.length<1000)return rows;const next=page.at(-1)!.external_id;if(next<=cursor)throw Error('La lectura histórica no avanzó.');cursor=next;}
+}
+export async function readBasketHistory(ctx:Context){
+ const started=Date.now(),today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),closed=new Date(Date.parse(today)-86400000).toISOString().slice(0,10);
+ const [products,variants,windows,documents,details]=await Promise.all([
+  scan(ctx,'products','name,state:data->state',20000),scan(ctx,'variants','product_id',50000),
+  scan(ctx,'sales_windows','from:data->>from,to:data->>to,reconciliation:data->>reconciliation,sourceCount:data->sourceCount,importedCount:data->importedCount,excludedCount:data->excludedCount',10000),
+  scan(ctx,'sales_documents','day:data->>emissionDay,code:data->>codeSii,documentType:data->>documentType,state:data->state,complete:data->complete,cancellationStatus:data->cancellationStatus,cancellationDate:data->cancellationDate,isCreditNote:data->isCreditNote',250000),
+  scan(ctx,'sales_details','documentId:data->>documentId,variantId:data->>variantId,quantity:data->quantity,net:data->net',1000000),
+ ]);
+ const sourceWindows:HistoryWindow[]=windows.map(w=>({from:w.from??'',to:w.to??'',valid:w.reconciliation==='document_count_only'&&num(w.sourceCount)!==null&&num(w.importedCount)!==null&&num(w.importedCount)!+(num(w.excludedCount)??0)===num(w.sourceCount)}));
+ const coverage=historyCoverage(sourceWindows,closed),byVariant=new Map(variants.map(v=>[v.external_id,v.product_id])),byDocument=new Map<string,SourceRow[]>();
+ for(const l of details){if(!l.documentId)continue;const key=l.documentId+':'+l.run_id,lines=byDocument.get(key)??[];lines.push(l);byDocument.set(key,lines);}
+ const isCancelled=(d:SourceRow)=>![null,undefined,0,'0',false,'false',''].includes(d.cancellationStatus as never)||![null,undefined,0,'0',''].includes(d.cancellationDate as never);
+ const baskets:HistoryBasket[]=[];let notes=0,cancelled=0,nonFinal=0,incomplete=0,invalid=0,zeroValueLines=0,outside=0;const issues:{day:string;reason:string}[]=[];const byDocumentType:Record<string,{documents:number;largeBaskets:number;maxProducts:number}>={};
+ const invalidDocuments:{day:string;reason:string}[]=[];
+ for(const d of documents){if(!d.day||!coverage.days.has(d.day)){outside++;continue;}if(['56','61'].includes(String(d.code))||yes(d.isCreditNote)){notes++;continue;}if(isCancelled(d)){cancelled++;continue;}if(!(['33','34','39','41'].includes(String(d.code))||d.documentType?.toUpperCase()==='TICKET DE VENTA')||String(d.state)!=='0'){nonFinal++;continue;}if(!yes(d.complete)){incomplete++;invalidDocuments.push({day:d.day,reason:'Documento incompleto'});continue;}
+  const lines=byDocument.get(d.external_id+':'+d.run_id)??[],seen=new Set<string>();let bad=!lines.length;const paid=new Set<string>();
+  for(const l of lines){const q=num(l.quantity),net=num(l.net),product=byVariant.get(l.variantId??''),sourceId=l.external_id.split(':')[1];if(q===null||q<=0||net===null||net<0||!product||!sourceId||seen.has(sourceId)){bad=true;continue;}seen.add(sourceId);if(net===0){zeroValueLines++;continue;}paid.add(product);}
+  if(bad){invalid++;invalidDocuments.push({day:d.day,reason:'Líneas ausentes, inválidas, duplicadas o sin producto'});continue;}baskets.push({day:d.day,products:[...paid]});const typeKey=(d.documentType??'Tipo sin nombre')+' (SII '+String(d.code??'sin código')+')',type=byDocumentType[typeKey]??{documents:0,largeBaskets:0,maxProducts:0};type.documents++;if(paid.size>10)type.largeBaskets++;type.maxProducts=Math.max(type.maxProducts,paid.size);byDocumentType[typeKey]=type;
+ }
+ const windowCountIssues=windows.flatMap(w=>{if(!w.from||!w.to||num(w.importedCount)===null||w.to>closed)return [];const actual=documents.filter(d=>d.day&&d.day>=w.from!&&d.day<=w.to!).length;return actual===num(w.importedCount)?[]:[{from:w.from,to:w.to,expected:Number(w.importedCount),actual}];});
+ if(invalidDocuments.length)issues.push(...invalidDocuments);
+ const analysis=analyzeHistory(baskets,products.map(p=>({id:p.external_id,name:p.name??'',active:String(p.state)==='0'})),sourceWindows,closed);
+ return {...analysis,checkedAt:new Date().toISOString(),durationMs:Date.now()-started,source:{byDocumentType,documentsRead:documents.length,linesRead:details.length,notesExcluded:notes,cancelledExcluded:cancelled,nonFinalExcluded:nonFinal,incompleteExcluded:incomplete,invalidExcluded:invalid,zeroValueLinesExcluded:zeroValueLines,outsideCoverage:outside,windowCountIssues,issueDays:[...new Set(issues.map(i=>i.day))].sort()},notices:['Conteos verificados contra la importación; no es una auditoría contable de cada venta.','Solo productos con cantidad positiva e importe de línea mayor que cero. Se excluyen líneas gratuitas; no se restan notas de crédito ni devoluciones.','Un producto cuenta una vez por documento aunque incluya varias variantes. Documentos no equivale a clientes distintos.','La asociación no prueba complementariedad ni efecto de ofrecer un pack. El catálogo activo es el observado actualmente.','Patrón repetido: al menos 10 documentos, presencia en tres meses y no más del 60 % de casos en un solo mes. Es un filtro descriptivo, no una prueba estadística.','Los importes, nombres de clientes y documentos individuales no se envían al navegador. No se llama a Gemini ni se modifica Bsale.']};
+}
+type Dataset=Awaited<ReturnType<typeof readBasketHistory>>;
+const cache=new Map<number,{expires:number;pending:boolean;promise:Promise<Dataset>}>();
+export async function basketHistory(ctx:Context,fresh=false){const old=cache.get(ctx.orgId);if(old&&(old.pending||!fresh&&old.expires>Date.now()))return old.promise;if(cache.size>=3)cache.delete(cache.keys().next().value!);const entry={expires:0,pending:true,promise:readBasketHistory(ctx)};cache.set(ctx.orgId,entry);try{const result=await entry.promise;entry.pending=false;entry.expires=Date.now()+300000;return result;}catch(e){if(cache.get(ctx.orgId)===entry)cache.delete(ctx.orgId);throw e;}}

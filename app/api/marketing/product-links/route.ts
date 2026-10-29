@@ -1,0 +1,7 @@
+import { z } from 'zod';
+import { marketingContext,marketingError,MarketingError } from '@/lib/marketing/server';
+import { listProductLinks,verifyProductLink } from '@/lib/marketing/product-links-server';
+export const runtime='nodejs';export const maxDuration=120;
+const headers={'Cache-Control':'private, no-store'};
+export async function GET(request:Request){try{const p=new URL(request.url).searchParams;const page=z.coerce.number().int().min(0).max(200).parse(p.get('page')??0);const q=z.string().max(100).parse(p.get('q')??'');return Response.json(await listProductLinks(await marketingContext(),page,q),{headers});}catch(e){return marketingError(e);}}
+export async function POST(request:Request){try{if(request.headers.get('origin')!==new URL(request.url).origin)throw new MarketingError('Origen no permitido.',403);const text=await request.text();if(text.length>12000)throw new MarketingError('Solicitud demasiado grande.',413);const {products}=z.object({products:z.array(z.object({productId:z.string().regex(/^\d+$/),url:z.url().max(2000)})).min(1).max(5)}).parse(JSON.parse(text));const ctx=await marketingContext();const results=[];for(const product of products){try{results.push(await verifyProductLink(ctx,product));}catch(e){results.push({productId:product.productId,status:'pending',error:e instanceof Error?e.message:'No se pudo verificar.'});}}return Response.json({results},{headers});}catch(e){return marketingError(e);}}

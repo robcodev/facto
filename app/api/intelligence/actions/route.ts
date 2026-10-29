@@ -1,0 +1,9 @@
+import { z } from 'zod';
+import { marketingContext,marketingError,MarketingError } from '@/lib/marketing/server';
+import { listActions,createAction,createActionSchema,updateAction,updateActionSchema,declareBrandName,brandNameSchema } from '@/lib/intelligence/actions-server';
+export const runtime='nodejs';export const maxDuration=120;
+const headers={'Cache-Control':'private, no-store'};
+export async function GET(request:Request){try{const ctx=await marketingContext(),id=new URL(request.url).searchParams.get('productId');if(id&&!/^\d+$/.test(id))throw new MarketingError('Producto inválido.');return Response.json(await listActions(ctx,id??undefined),{headers});}catch(e){return marketingError(e);}}
+async function body(request:Request){if(request.headers.get('origin')!==new URL(request.url).origin)throw new MarketingError('Origen no permitido.',403);const raw=await request.text();if(raw.length>8000)throw new MarketingError('Solicitud demasiado grande.',413);return JSON.parse(raw);}
+export async function POST(request:Request){try{const input=await body(request),ctx=await marketingContext();if(input.action==='brand')return Response.json(await declareBrandName(ctx,brandNameSchema.parse(input)),{headers});return Response.json(await createAction(ctx,createActionSchema.parse(input)),{headers});}catch(e){return e instanceof z.ZodError?Response.json({error:'Revisa los campos y fechas de la acción.'},{status:422,headers}):marketingError(e);}}
+export async function PATCH(request:Request){try{const input=updateActionSchema.parse(await body(request)),ctx=await marketingContext();return Response.json(await updateAction(ctx,input),{headers});}catch(e){return e instanceof z.ZodError?Response.json({error:'Revisa el estado y las fechas del resultado.'},{status:422,headers}):marketingError(e);}}
