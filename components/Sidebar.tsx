@@ -17,6 +17,7 @@ const operational: NavItem[] = [
 const commercial: NavItem[] = [
     { href: '/intel', label: 'Intel', icon: 'database' },
     { href: '/intelligence', label: 'Inteligencia comercial', icon: 'chart' },
+    { href: '/rotation', label: 'Rotación e inventario', icon: 'box' },
     { href: '/marketing', label: 'Marketing', icon: 'spark' },
 ];
 const finance: NavItem[] = [

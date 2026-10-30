@@ -1,40 +1,47 @@
-# Proveedores y cuentas por pagar: prueba local
+# Proveedores: registro de facturas pagadas
 
-Ruta `/suppliers`, menú **Finanzas ($) → Proveedores y pagos**. Comparte la colección con **Caja y gastos** (`/cash`). Mantiene el acceso habitual de Facto.
+Regla acordada: **Guardar y marcar pagada** registra la forma de pago y marca pagada la factura completa en Facto, incluso si se usa cheque. No se ejecutan pagos, no se actualiza Bsale y el estado no es una certificación de cobro bancario. No contempla abonos parciales en este flujo.
 
-Incluye proveedores editables, cinco facturas ficticias, cuotas libres, calendario, pagos, anticipos, aplicaciones a varias facturas del mismo proveedor y registro de entrega, confirmación efectiva, anulación, rechazo y reemplazo. Las referencias conservan ceros iniciales. Servicios y gastos no requieren SKU ni recepción.
+## Consulta
 
-## Aislamiento y persistencia
+- Estado de pago: todas, pendientes de registrar pago, pagadas.
+- Forma registrada: cheque, transferencia, efectivo u otro; combinable con proveedor y búsqueda por folio/RUT.
+- **Ver facturas pagadas** abre el listado del periodo consultado en un modal, con forma, cheque, fecha y responsable. No depende de que la factura venza en el día seleccionado.
+- El calendario excluye las pagadas de los vencimientos pendientes y las muestra en verde el día de registro. La recepción en SII permanece en azul.
+- El modal conserva forma y cheque guardados y permite corregir esos datos sin cambiar la fecha original del pago. Un cambio del total o moneda en Bsale requiere revisar y guardar de nuevo antes de considerar pagada la factura.
+- Pendiente de registrar no significa que la deuda siga impaga: para documentos antiguos hace falta revisar los registros iniciales.
 
-No llama a Bsale, Supabase, Gemini, bancos ni funciones de stock. El ID Bsale es una referencia manual de prueba con unicidad, sin sincronización. La autenticación del sitio sigue operando como antes.
+## Guardado compartido preparado, pendiente de habilitar
 
-Usar únicamente datos ficticios. Los cambios se conservan después de cada operación en `sessionStorage` de la pestaña con clave `facto-suppliers-demo-v1`. No es una base compartida ni un respaldo contable. El cierre de la pestaña normalmente elimina la sesión, aunque la restauración del navegador puede conservarla. Se puede exportar JSON y reiniciar la muestra.
+La migración `supabase/migrations/20261030145410_supplier_invoice_payments.sql` crea dos tablas pequeñas: estado actual e historial de cambios. Se guarda únicamente identidad de la factura, monto/moneda de referencia, forma, cheque, fechas, responsable y revisión; no se duplican XML, PDFs, catálogo o facturas completas.
 
-## Reglas
+El acceso sigue la empresa compartida de Facto: autenticación en cada petición, empresa y responsable obtenidos en servidor; tablas con RLS y sin acceso directo de anon/authenticated. El servidor verifica la factura en Bsale al guardar. Las correcciones usan revisión para detectar actualizaciones concurrentes y el historial se inserta atómicamente con el cambio.
 
-- Empresa ficticia única, moneda CLP, pesos enteros. Neto + impuestos = total. Cuotas positivas cuya suma coincide con el total.
-- Unicidad por proveedor (RUT único), tipo y folio normalizado. Un ID Bsale solo puede vincularse a una factura.
-- Saldo pendiente = total menos pagos efectivos aplicados. Comprometido = aplicaciones pendientes o entregadas. Sin cubrir = saldo menos comprometido.
-- Vencido = cuotas anteriores al día actual en Santiago menos pagos efectivos. Los pagos efectivos se imputan primero a las cuotas más antiguas. Un cheque pendiente no elimina vencimientos. Esta regla de imputación debe acordarse antes de la versión definitiva.
-- Facturas por conciliar quedan fuera de totales, calendario y nuevas aplicaciones. Marcarlas conciliadas supone revisar la obligación completa; saldos históricos parciales se resolverán con la futura conciliación del Excel.
-- No se puede aplicar por encima del saldo disponible ni mezclar proveedores. El remanente de un pago puede conservarse como anticipo y distribuirse posteriormente.
-- La confirmación efectiva exige fecha y es manual. No equivale a conciliación bancaria automática. No se puede confirmar dos veces el mismo instrumento ni cambiar el importe de un pago registrado.
-- Reemplazar conserva el instrumento anterior, libera su compromiso y valida el nuevo como una sola operación local. Anulación y rechazo liberan el compromiso.
-- Cambiar la fecha base no recalcula cuotas automáticamente. El botón 30/60 propone dos cuotas en días corridos. Las condiciones habituales del proveedor son una referencia editable por factura.
-- Historial local con usuario de prueba, sin auditoría compartida ni permisos financieros específicos.
+**Estado verificado el 30/10/2026 mediante lecturas GET reales:** supplier_invoice_payments y supplier_invoice_payment_events devuelven HTTP 404 / PGRST205. No están disponibles para la aplicación. El módulo continúa en modo local. Hace falta ejecutar o verificar la migración de pagos en el proyecto Supabase correcto y su exposición en la API; se requiere acceso administrativo. Esta revisión no ejecutó migraciones ni registró pagos reales como prueba. Una consulta HEAD no basta para verificar disponibilidad: comprobar una lectura real con columnas y revisar status/error.
+
+Si faltan las tablas, la página muestra **Registro de prueba en esta pestaña** y guarda las nuevas marcas pagadas en `sessionStorage`, por usuario y factura, clave `facto-supplier-paid-v3:<usuario>`. No se comparte entre equipos. Si falla guardar, no se marca pagada. No se convierten automáticamente las anotaciones de forma de pago anteriores en pagos; se recuperan como borrador y requieren guardado explícito. Los registros locales nuevos tampoco se importan automáticamente a Supabase cuando se habilite.
+
+Si la tabla existe pero falla la consulta, se informa error y no se sustituye silenciosamente el estado compartido por un registro local. Refrescar vuelve a leer estados. El rango de facturas continúa siendo de meses contables Bsale, inicialmente actual y anterior.
 
 ## Verificación
 
-Desde la raíz de Facto:
-
 ```text
 node node_modules/typescript/bin/tsc --noEmit --incremental false
-node node_modules/eslint/bin/eslint.js app/suppliers/core.ts app/suppliers/page.tsx components/Sidebar.tsx
+node node_modules/eslint/bin/eslint.js app/suppliers/core.ts app/suppliers/server.ts app/suppliers/payments-server.ts app/suppliers/page.tsx app/api/suppliers/route.ts
 node app/suppliers/verify.cjs
+node app/suppliers/verify-paid.cjs
 ```
 
-Prueba manual: revisar factura 1001 con dos cuotas de $595.000; reemplazar cheque 00001234 por 00001235 sin aumentar el compromiso; confirmar el nuevo instrumento con fecha efectiva y observar la reducción del saldo; revisar factura 4001 de servicios y 1990 por conciliar; repartir un pago entre 1001 y 1002 del mismo proveedor.
+`verify-paid.cjs` acepta como argumento adicional la ruta de un paquete PGlite instalado para ejecutar la migración en una base efímera y comprobar ACL/RLS, cheques con ceros, historial, identidad/fecha inmutables, unicidad y conflictos de revisión. Las pruebas realizadas usaron datos ficticios locales; no marcaron facturas reales como pagadas.
 
-## Etapas pendientes
+## Cruce con recepciones
 
-Persistencia compartida, responsables y permisos; comprobantes; notas de crédito y ajustes; importación Bsale/XML y Excel conciliado; ampliación de IA; vínculos con recepciones y variantes de Intel; control persistente de reintentos y recuperación de recepciones con resultado incierto. Este módulo no debe usarse todavía para registrar deuda real.
+Al abrir el detalle de una factura se consultan recepciones del mismo folio en Bsale y el espejo Intel. Se muestran fecha de recepción de mercadería (distinta de recepción SII), sucursal, productos/variantes, SKU, cantidades, costo unitario y neto por línea. Los nombres y SKU se recuperan del catálogo Intel y los detalles se consultan actuales en Bsale; si solo hay copia Intel se indica su fecha y la falta de verificación actual.
+
+El folio y tipo factura generan una coincidencia candidata; no confirman proveedor. Un vínculo declarado explícitamente en la nota estructurada FACTO_INVOICE identifica la factura; declaraciones contradictorias se muestran como otra factura/proveedor. No se usan nombres aproximados, igualdad de importe ni proximidad de fechas como prueba de identidad. Las guías con el mismo folio no se mezclan automáticamente.
+
+La comparación usa neto factura (campos Bsale y XML cuando verificable) frente a suma cantidad × costo de la recepción. No compara total con IVA contra costo neto. En factura exenta no suma dos veces neto/exento. Faltantes de costo, detalles truncados/duplicados, otra moneda o identidad contradictoria impiden comparar. Varias candidatas no se suman automáticamente; se comparan por separado. Una diferencia puede requerir revisar costos, descuentos o recepciones parciales, no demuestra por sí sola un error.
+
+Sin coincidencia se informa que no se encontró recepción directa por folio, sin asegurar que no exista un ingreso por guía u otro documento. Si falló la búsqueda no se informa ausencia. Se consultan hasta 20 candidatas y 500 líneas por recepción, indicando datos parciales al superar el límite.
+
+No se escribe ni duplica información de stock. Pruebas: node app/suppliers/verify-receptions.cjs. Prueba real de solo lectura: factura Bsale 6219, recepción 17624, fecha 22/10/2026 y netos coincidentes de $83.928; el proveedor sigue sin confirmación en la recepción, por lo que permanece candidata.
