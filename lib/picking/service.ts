@@ -1,6 +1,7 @@
 import 'server-only';
 import { timingSafeEqual } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { bsaleResourceUrl } from './bsale-url';
 
 const BSALE_API = 'https://api.bsale.io/v1';
 const ORGANIZATION_SLUG = 'facto-compartido';
@@ -22,9 +23,8 @@ export function matchesSecret(actual: string | null, expectedName: string) {
 }
 
 async function bsaleGet(pathOrUrl: string) {
-    const url = pathOrUrl.startsWith('https://') ? pathOrUrl : `${BSALE_API}${pathOrUrl}`;
-    if (!url.startsWith(`${BSALE_API}/`)) throw new Error('Bsale entregó una URL de recurso no permitida.');
-    const response = await fetch(url, { headers: { access_token: requiredEnv('BSALE_TOKEN') }, cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    const url = bsaleResourceUrl(pathOrUrl);
+    const response = await fetch(url, { headers: { access_token: requiredEnv('BSALE_TOKEN') }, cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15000) });
     const text = await response.text();
     let body: Json = {};
     try { body = text ? JSON.parse(text) as Json : {}; } catch { body = { raw: text }; }
