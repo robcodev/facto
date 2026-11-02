@@ -9,7 +9,23 @@ type Row = {
   run_id: string;
   observed_at: string;
 };
-const fields = "id,external_id,product_id,name,data,run_id,observed_at";
+const metadata = "id,external_id,product_id,name,run_id,observed_at";
+// Keep the original mirror intact; transfer only the fields used by this reader.
+const dataFields: Record<string, string[]> = {
+  sales_documents: ["net", "currency", "state", "complete", "cancellationStatus", "cancellationDate", "codeSii", "isCreditNote", "documentType", "emissionDay", "emissionDate"],
+  sales_details: ["documentId", "variantId", "quantity", "relatedDetailId", "net", "discountPercentage", "netDiscount"],
+  sales_windows: ["from", "to", "reconciliation", "importedCount", "sourceCount", "excludedCount"],
+  inventory_receptions: ["complete", "updateStock", "date"],
+  inventory_receptions_details: ["movementId", "variantId", "quantity", "cost", "date"],
+  inventory_stock: ["variantId", "officeId", "available", "observedAt"],
+  variants: ["state"],
+  products: ["state", "brandName"],
+  web: ["url"],
+};
+const fields = (resource: string) => dataFields[resource]
+  ? metadata + "," + dataFields[resource].map(key => `d_${key}:data->${key}`).join(",")
+  : metadata + ",data";
+const batchSize = 100;
 const n = (x: unknown) =>
   x !== null && x !== undefined && x !== "" && Number.isFinite(Number(x))
     ? Number(x)
@@ -28,10 +44,10 @@ export async function readOpportunities(
   includeCommercial = false,
 ): Promise<Opportunities> {
   const notices: string[] = [];
-  const base = (resource: string, counted = true) => {
+  const base = (resource: string) => {
     const query = db
       .from("intel_records")
-      .select(fields, counted ? { count: "exact" } : {})
+      .select(fields(resource))
       .eq("organization_id", org)
       .eq("resource", resource);
     // Explicit predicate matches Intel's existing partial indexes.
@@ -44,7 +60,13 @@ export async function readOpportunities(
   const unwrap = (r: { data: unknown; error: { message: string } | null }) => {
     if (r.error)
       throw new Error("No pudimos consultar Intel.", { cause: r.error });
-    return (r.data ?? []) as Row[];
+    return ((r.data ?? []) as (Row & Record<string, unknown>)[]).map(row => {
+      const data: Record<string, unknown> = { ...row.data };
+      for (const [key, value] of Object.entries(row)) {
+        if (key.startsWith("d_")) data[key.slice(2)] = value;
+      }
+      return { ...row, data };
+    });
   };
   async function pages(make: () => ReturnType<typeof base>, cap = 10000, label = "sales_documents") {
     const all: Row[] = [];
@@ -53,7 +75,6 @@ export async function readOpportunities(
       if (result.error) throw new Error(`No pudimos leer ${label}: ${result.error.message}`);
       const rows = unwrap(result);
       all.push(...rows);
-      if ((result.count ?? 0) > cap) throw new Error("El período supera el límite de 10.000 registros por consulta; reduce las fechas.");
       if (rows.length < 500) return all;
     }
     throw new Error("No se pudo confirmar la lectura completa; reduce las fechas.");
@@ -61,19 +82,19 @@ export async function readOpportunities(
   const start = Date.parse(from) / 1000,
     end = Date.parse(to) / 1000 + 86400;
   const [rr, wr, dr, sr] = await Promise.all([
-    comparisonOnly && !includeReceipts ? Promise.resolve({data:[],error:null,count:0}) : base("inventory_receptions")
+    comparisonOnly && !includeReceipts ? Promise.resolve({data:[],error:null}) : base("inventory_receptions")
       .eq("data->>complete", "true")
       .eq("data->>updateStock", "1")
       .gte("data->date", start)
       .lt("data->date", end)
       .order("data->date", { ascending: false })
       .order("id")
-      .limit(100),
+      .limit(101),
     base("sales_windows")
       .lte("data->>from", to)
       .gte("data->>to", from)
-      .limit(100),
-    pages(() => base("sales_documents", false).gte("data->>emissionDay", from).lte("data->>emissionDay", to).order("id")),
+      .limit(101),
+    pages(() => base("sales_documents").gte("data->>emissionDay", from).lte("data->>emissionDay", to).order("id")),
     comparisonOnly ? Promise.resolve({data:[],error:null}) : db
       .from("intel_sync_runs")
       .select("id,status,cursor")
@@ -83,8 +104,9 @@ export async function readOpportunities(
       .order("started_at", { ascending: false })
       .limit(5),
   ]);
-  const receipts = unwrap(rr),
-    windows = unwrap(wr),
+  const receiptRows = unwrap(rr), windowRows = unwrap(wr);
+  const receipts = receiptRows.slice(0, 100),
+    windows = windowRows.slice(0, 100),
     docs = dr;
   if (sr.error) throw new Error("No pudimos consultar las capturas de stock.");
   const stockRun = sr.data?.find(
@@ -93,11 +115,11 @@ export async function readOpportunities(
       ["list", "details", "check", "done"].includes(r.cursor.phase) &&
       !yes(r.cursor.checkingStock),
   );
-  if ((rr.count ?? 0) > 100)
+  if (receiptRows.length > 100)
     notices.push(
       "Prueba acotada a las 100 recepciones más recientes del período; no es un ranking completo.",
     );
-  let covered = (wr.count ?? 0) <= 100;
+  let covered = windowRows.length <= 100;
   for (
     let day = Date.parse(from);
     covered && day <= Date.parse(to);
@@ -128,11 +150,12 @@ export async function readOpportunities(
   async function details(resource: string, parents: Row[], field: string) {
     if (!parents.length) return [];
     const all: Row[] = [];
-    for (let offset = 0; offset < parents.length; offset += 20) {
-      const batch = parents.slice(offset, offset + 20);
-      const rows = await pages(() => base(resource, false)
+    for (let offset = 0; offset < parents.length; offset += batchSize) {
+      const batch = parents.slice(offset, offset + batchSize);
+      const parentRuns = new Map(batch.map(h => [h.external_id, h.run_id]));
+      const rows = await pages(() => base(resource)
         .in(`data->>${field}`, batch.map(p => p.external_id)).order("data->>" + field).order("id"), 10000, resource);
-      all.push(...rows.filter(l => batch.some(h => h.external_id === String(l.data[field]) && h.run_id === l.run_id)));
+      all.push(...rows.filter(l => parentRuns.get(String(l.data[field])) === l.run_id));
       if (all.length > 20000) throw new Error("Los detalles superan 20.000 líneas; reduce el período.");
     }
     return all;
@@ -148,10 +171,7 @@ export async function readOpportunities(
   let invalidLines = saleLines === null;
   if (covered && !adjustments && !salesLimited && saleLines)
     invalidLines =
-      finalDocs.some(
-        (h) =>
-          !saleLines.some((l) => String(l.data.documentId) === h.external_id),
-      ) ||
+      (() => { const ids = new Set(saleLines.map(l => String(l.data.documentId))); return finalDocs.some(h => !ids.has(h.external_id)); })() ||
       saleLines.some(
         (l) =>
           n(l.data.quantity) === null ||
@@ -185,8 +205,9 @@ export async function readOpportunities(
     signal: "receipt" | "sales",
     field: string,
   ) {
+    const byParent = new Map(parents.map(p => [p.external_id + ":" + p.run_id, p]));
     for (const l of lines) {
-      const h = parents.find((p) => p.external_id === String(l.data[field]) && p.run_id === l.run_id);
+      const h = byParent.get(String(l.data[field]) + ":" + l.run_id);
       const quantity = n(l.data.quantity),
         event = n(h?.data[signal === "receipt" ? "date" : "emissionDate"]);
       if (
@@ -223,7 +244,7 @@ export async function readOpportunities(
   async function lookup(resource:string,field:string,ids:string[]) {
     if(ids.length>5000)throw new Error('Más de 5.000 referencias de catálogo; reduce el período.');
     const result:Row[]=[];
-    for(let i=0;i<ids.length;i+=100)result.push(...await pages(()=>base(resource,false).in(field,ids.slice(i,i+100)).order('id')));
+    for(let i=0;i<ids.length;i+=batchSize)result.push(...await pages(()=>base(resource).in(field,ids.slice(i,i+batchSize)).order('id')));
     return result;
   }
   const movementVariants=await lookup('variants','external_id',variantIds);
@@ -251,7 +272,7 @@ export async function readOpportunities(
     const id=byVariant.get(g.variantId)?.product_id;if(!id)continue;
     const p=receiptTotals.get(id)??{quantity:0,documents:new Set<number>(),lastEvent:0};p.quantity+=g.quantity;for(const document of g.ids)p.documents.add(document);p.lastEvent=Math.max(p.lastEvent,g.event);receiptTotals.set(id,p);
   }
-  const productReceipts=Object.fromEntries([...receiptTotals].map(([id,p])=>[id,{quantity:p.quantity,documents:p.documents.size,lastDate:new Date(p.lastEvent*1000).toISOString(),limited:(rr.count??0)>100}]));
+  const productReceipts=Object.fromEntries([...receiptTotals].map(([id,p])=>[id,{quantity:p.quantity,documents:p.documents.size,lastDate:new Date(p.lastEvent*1000).toISOString(),limited:receiptRows.length>100}]));
   let commercial:Opportunities['commercial'];
   if(includeCommercial){
     const detailId=(line:Row)=>line.external_id.split(':')[1];
@@ -259,7 +280,7 @@ export async function readOpportunities(
     const missingRelated=[...new Set(noteLines.map(l=>String(l.data.relatedDetailId??'')).filter(id=>/^\d+$/.test(id)&&id!=='0'&&!currentById.has(id)))];
     if(missingRelated.length>500)throw new Error('Más de 500 enlaces de notas por comprobar; reduce el período.');
     const related:Row[]=[];
-    for(let i=0;i<missingRelated.length;i+=20){const batch=missingRelated.slice(i,i+20);related.push(...await pages(()=>base('sales_details',false).eq('source','bsale').in('raw->>id',batch).order('id'),10000,'enlaces de notas'));}
+    for(let i=0;i<missingRelated.length;i+=batchSize){const batch=missingRelated.slice(i,i+batchSize);related.push(...await pages(()=>base('sales_details').eq('source','bsale').in('raw->>id',batch).order('id'),10000,'enlaces de notas'));}
     const allRelated=[...saleLines,...related];
     const parentIds=[...new Set(related.map(l=>String(l.data.documentId)).filter(id=>!docs.some(d=>d.external_id===id)))];
     const parents=[...docs,...await lookup('sales_documents','external_id',parentIds)];
@@ -285,8 +306,8 @@ export async function readOpportunities(
   const stockIds=[...new Set(activeVariants.map(v=>v.external_id))];
   const webRows=await lookup('web','product_id',selectedProductIds);
   const stockRows:Row[]=[];
-  if(stockRun)for(let i=0;i<stockIds.length;i+=20){
-    stockRows.push(...await pages(()=>base('inventory_stock',false).eq('run_id',stockRun.id).in('data->>variantId',stockIds.slice(i,i+20)).order('data->>variantId').order('id')));
+  if(stockRun)for(let i=0;i<stockIds.length;i+=batchSize){
+    stockRows.push(...await pages(()=>base('inventory_stock').eq('run_id',stockRun.id).in('data->>variantId',stockIds.slice(i,i+batchSize)).order('data->>variantId').order('id')));
     if(stockRows.length>20000)throw new Error('El stock supera 20.000 registros; reduce el período.');
   }
   function stockFor(id:string){

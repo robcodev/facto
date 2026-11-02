@@ -29,7 +29,7 @@ export async function GET(request: Request) {
             const doc = await ctx.db.from('intel_records').select('*').eq('organization_id', ctx.orgId).eq('resource', 'sales_documents').eq('external_id', id).single();
             if (doc.error) throw doc.error;
             if (String(doc.data.data.documentTypeId) === '38') return Response.json({ error: 'Las preventas están excluidas de Intel.' }, { status: 404, headers: noStore });
-            const children = await ctx.db.from('intel_records').select('*', { count: 'exact' }).eq('organization_id', ctx.orgId).eq('data->>documentId', id).eq('run_id', doc.data.run_id).order('id').range(page * 100, page * 100 + 99);
+            const children = await ctx.db.from('intel_records').select('*', { count: 'exact' }).eq('organization_id', ctx.orgId).like('resource', 'sales_%').eq('data->>documentId', id).eq('run_id', doc.data.run_id).order('id').range(page * 100, page * 100 + 99);
             if (children.error) throw children.error;
             return Response.json({ document: doc.data, children: children.data, total: children.count, page }, { headers: noStore });
         }

@@ -55,8 +55,10 @@ const cache = new Map<number, { promise: Promise<Dataset>; expires: number }>();
 async function dataset(ctx: Context) {
   const old = cache.get(ctx.orgId); if (old && old.expires > Date.now()) return old.promise;
   if (cache.size >= 3) cache.delete(cache.keys().next().value!);
-  const entry = { promise: loadInventory(ctx), expires: Date.now() + 300000 }; cache.set(ctx.orgId, entry);
-  try { return await entry.promise; } catch (e) { if (cache.get(ctx.orgId) === entry) cache.delete(ctx.orgId); throw e; }
+  // Concurrent callers share a pending load. The five-minute freshness window
+  // starts when the dataset is ready, rather than being consumed by its import.
+  const entry = { promise: loadInventory(ctx), expires: Infinity }; cache.set(ctx.orgId, entry);
+  try { const result = await entry.promise; entry.expires = Date.now() + 300000; return result; } catch (e) { if (cache.get(ctx.orgId) === entry) cache.delete(ctx.orgId); throw e; }
 }
 export async function inventoryView(ctx: Context, f: Filters) {
   const data = await dataset(ctx), { rows, ...meta } = data;

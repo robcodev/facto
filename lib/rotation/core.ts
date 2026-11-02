@@ -49,7 +49,22 @@ export function buildDataset(input: { products: Row[]; variants: Row[]; types: R
   // Verify window counts against current headers, not just old sync metadata.
   const docCounts = new Map<string, number>(); for (const d of input.documents) docCounts.set(String(d.day), (docCounts.get(String(d.day)) ?? 0) + 1);
   for (const w of input.windows) { let actual = 0; for (let t = Date.parse(String(w.from)); t <= Date.parse(String(w.to)); t += 86400000) actual += docCounts.get(day(t)) ?? 0; if (actual !== num(w.importedCount)) for (let t = Date.parse(String(w.from)); t <= Date.parse(String(w.to)); t += 86400000) badDays.add(day(t)); }
-  const intervalCovered = (from: string, end: string) => { for (let t = Date.parse(from); t <= Date.parse(end); t += 86400000) if (!covered.has(day(t)) || badDays.has(day(t))) return false; return true; };
+  // Coverage depends on the period, not the variant. Avoid rechecking the same
+  // calendar hundreds of thousands of times while building a catalog view.
+  const intervalCache = new Map<string, boolean>();
+  const intervalCovered = (from: string, end: string) => {
+    const key = from + ':' + end, cached = intervalCache.get(key);
+    if (cached !== undefined) return cached;
+    for (let t = Date.parse(from); t <= Date.parse(end); t += 86400000) {
+      if (!covered.has(day(t)) || badDays.has(day(t))) { intervalCache.set(key, false); return false; }
+    }
+    intervalCache.set(key, true); return true;
+  };
+  const periods = [30, 90, 365].map(days => {
+    const from = day(Date.parse(to) - (days - 1) * 86400000);
+    return { days, from, covered: intervalCovered(from, to) };
+  });
+  const previousTo = day(Date.parse(to) - 365 * 86400000), previousFrom = day(Date.parse(previousTo) - 89 * 86400000), previousCovered = intervalCovered(previousFrom, previousTo);
   const events = new Map<string, Event[]>();
   const push = (id: string, e: Event) => { const list = events.get(id) ?? []; list.push(e); events.set(id, list); };
   for (const h of saleHeaders) { const key = h.external_id + ':' + h.run_id; if (sales.invalid.has(key) || !covered.has(String(h.day))) continue; for (const l of sales.groups.get(key) ?? []) push(String(l.variantId), { kind: 'Venta', date: String(h.day), documentId: h.external_id, number: h.number == null ? null : String(h.number), quantity: Number(l.quantity), cost: null, stockEffect: 'No se resta de la captura', administrative: false, recordId: l.external_id, runId: l.run_id, observedAt: h.observed_at ?? null, documentReference: null }); }
@@ -75,8 +90,8 @@ export function buildDataset(input: { products: Row[]; variants: Row[]; types: R
     const full = fullCandidates.has(String(v.sku)), receipts = list.filter(e => e.kind === 'Recepción' && !e.administrative && e.date <= to), costEvent = !full ? receipts.find(e => e.cost !== null && e.cost >= 0) : undefined;
     const saleEvents = list.filter(e => e.kind === 'Venta'), lastSale = saleEvents[0]?.date ?? null;
     const units: Record<string, number | null> = {};
-    for (const days of [30, 90, 365]) { const from = day(Date.parse(to) - (days - 1) * 86400000); units[days] = intervalCovered(from, to) ? saleEvents.filter(e => e.date >= from && e.date <= to).reduce((n, e) => n + e.quantity, 0) : null; }
-    const previousTo = day(Date.parse(to) - 365 * 86400000), previousFrom = day(Date.parse(previousTo) - 89 * 86400000), previousYear = intervalCovered(previousFrom, previousTo) ? saleEvents.filter(e => e.date >= previousFrom && e.date <= previousTo).reduce((n, e) => n + e.quantity, 0) : null;
+    for (const period of periods) units[period.days] = period.covered ? saleEvents.filter(e => e.date >= period.from && e.date <= to).reduce((n, e) => n + e.quantity, 0) : null;
+    const previousYear = previousCovered ? saleEvents.filter(e => e.date >= previousFrom && e.date <= previousTo).reduce((n, e) => n + e.quantity, 0) : null;
     const physical = sum('physical'), available = sum('available'), cost = costEvent?.cost ?? null;
     const quality = ['Días históricos con stock desconocidos.', 'Primer ingreso observado no es lanzamiento ni antigüedad del stock restante.', 'Proveedor y vínculo de factura sin verificar.'];
     if (full) quality.push('Posible relación FULL pendiente: sin consolidar SKU ni estimar antigüedad o costo.');
@@ -85,7 +100,7 @@ export function buildDataset(input: { products: Row[]; variants: Row[]; types: R
     if (previousYear === null) quality.push('Comparación estacional sin cobertura suficiente.');
     return { id: v.external_id, asOf: to, productId: v.product_id ?? null, product: p?.name ?? 'Producto sin correspondencia', name: v.name ?? '', sku: String(v.sku ?? ''), brand: String(p?.brandName || brands.get(String(p?.brandId)) || (p?.brandId ? 'Marca ID ' + String(p.brandId) : 'Sin marca')), category: types.get(p?.category_id ?? '') ?? (p?.category_id ? 'Categoría ID ' + p.category_id : 'Sin categoría'), web: web.has(v.product_id), full, physical, available, stockDate: stockValid ? ss.map(s => String(s.stockDate ?? s.observed_at)).sort()[0] : null, firstReceipt: receipts.at(-1)?.date ?? null, lastReceipt: receipts[0]?.date ?? null, receipts: new Set(receipts.map(e => e.documentId)).size, lastSale, daysWithoutSale: lastSale && intervalCovered(lastSale, to) ? Math.floor((Date.parse(to) - Date.parse(lastSale)) / 86400000) : null, units, previousYear, cost, costDate: costEvent?.date ?? null, value: physical !== null && cost !== null && physical >= 0 ? physical * cost : null, events: list, stockRows: ss, quality };
   });
-  return { rows, to, checkedAt: new Date().toISOString(), method: METHOD, quality: { invalidSalesDocuments: sales.invalid.size, invalidMovements, badDays: badDays.size, creditDocuments: notes.length, cancelledDocuments: input.documents.filter(cancelled).length }, coverage: Object.fromEntries([30, 90, 365].map(d => [d, intervalCovered(day(Date.parse(to) - (d - 1) * 86400000), to)])) };
+  return { rows, to, checkedAt: new Date().toISOString(), method: METHOD, quality: { invalidSalesDocuments: sales.invalid.size, invalidMovements, badDays: badDays.size, creditDocuments: notes.length, cancelledDocuments: input.documents.filter(cancelled).length }, coverage: Object.fromEntries(periods.map(period => [period.days, period.covered])) };
 }
 export type Filters = { days: number; threshold: number; q: string; brand: string; category: string; signal: string; positive: boolean; segment: string; sort: string; direction: string; group: boolean; page: number; variantId?: string };
 export function diagnose(row: Diagnostic, days: number, threshold: number) {
