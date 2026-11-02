@@ -32,6 +32,8 @@ const MAX_UPLOAD_SIZE_BYTES = 4 * 1024 * 1024;
 
 export default function RecepcionPage() {
     const [loading, setLoading] = useState(false);
+    const [processingStage, setProcessingStage] = useState<'reading' | 'validating'>('reading');
+    const [elapsedSeconds, setElapsedSeconds] = useState(0);
     const [offices, setOffices] = useState<BsaleOffice[]>([]);
     const [selectedOffice, setSelectedOffice] = useState<string>('');
     const [documentNumber, setDocumentNumber] = useState<string>('');
@@ -52,8 +54,16 @@ export default function RecepcionPage() {
         fetchOffices();
     }, []);
 
+    useEffect(() => {
+        if (!loading) return;
+        const started = Date.now();
+        const timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+        return () => clearInterval(timer);
+    }, [loading]);
+
     const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const fileList = e.target.files;
+        const input = e.target;
+        const fileList = input.files;
         if (!fileList || fileList.length === 0) return;
 
         const totalSize = Array.from(fileList).reduce((total, file) => total + file.size, 0);
@@ -64,6 +74,8 @@ export default function RecepcionPage() {
         }
 
         setLoading(true);
+        setProcessingStage('reading');
+        setElapsedSeconds(0);
         setProcessError(null);
         setItems([]);
         setDiscounts([{ id: 1, type: 'percentage', value: 0 }]);
@@ -78,6 +90,7 @@ export default function RecepcionPage() {
             const response = await fetch('/api/process-invoice', {
                 method: 'POST',
                 body: formData,
+                signal: AbortSignal.timeout(115_000),
             });
 
             if (!response.ok) {
@@ -94,6 +107,7 @@ export default function RecepcionPage() {
             }
 
             if (data.invoiceItems && data.invoiceItems.length > 0) {
+                setProcessingStage('validating');
                 const initialItems: UiItem[] = data.invoiceItems.map((item) => ({
                     ...item,
                     exists: null,
@@ -125,9 +139,12 @@ export default function RecepcionPage() {
                 );
             }
         } catch (error) {
-            setProcessError(error instanceof Error ? error.message : 'Ocurrió un error procesando el documento.');
+            setProcessError(error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name)
+                ? 'El análisis del documento tardó demasiado. Puedes seleccionar nuevamente el mismo PDF e intentarlo otra vez.'
+                : error instanceof Error ? error.message : 'Ocurrió un error procesando el documento.');
         } finally {
             setLoading(false);
+            input.value = '';
         }
     };
 
@@ -277,7 +294,10 @@ export default function RecepcionPage() {
                         disabled={loading}
                         className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"
                     />
-                    {loading && <span className="text-sm text-blue-600 animate-pulse font-medium">Procesando...</span>}
+                    {loading && <div role="status" aria-live="polite" className="text-sm text-blue-600 font-medium">
+                        <span>{processingStage === 'reading' ? 'Leyendo el documento con IA' : 'Validando los productos con Bsale'}… {elapsedSeconds} s</span>
+                        {processingStage === 'reading' && elapsedSeconds >= 20 && <p className="mt-1 text-xs text-slate-500">Los documentos con varias páginas pueden tardar más. El análisis tiene un límite de aproximadamente dos minutos.</p>}
+                    </div>}
                 </div>
                 {processError && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{processError}</div>}
             </section>

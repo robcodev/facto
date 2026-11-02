@@ -1,16 +1,18 @@
-import { ApiError, GoogleGenAI, Type } from '@google/genai';
+import { ApiError, GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { NextRequest, NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const MAX_FILES = 10;
 const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_SIZE_BYTES = 4 * 1024 * 1024;
+// Leave time to return a controlled error before Vercel ends the function.
+const PROCESSING_BUDGET_MS = 105_000;
 const TRANSIENT_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
 const MODEL_ATTEMPTS = [
-    { model: 'gemini-3.8-flash', timeout: 36_000 },
-    { model: 'gemini-3.7-flash', timeout: 18_000 },
+    { model: 'gemini-3.8-flash', timeout: 70_000 },
+    { model: 'gemini-3.7-flash', timeout: 30_000 },
 ] as const;
 const ALLOWED_MIME_TYPES = new Set([
     'application/pdf',
@@ -33,13 +35,17 @@ function getErrorStatus(error: unknown) {
     if (Number.isInteger(directStatus) && directStatus >= 400 && directStatus <= 599) return directStatus;
 
     const message = error instanceof Error ? error.message.toLowerCase() : '';
-    if (error instanceof Error && (error.name === 'AbortError' || Number(record?.code) === 20)) return 504;
+    if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError' || Number(record?.code) === 20)) return 504;
     if (message.includes('forbidden') || message.includes('permission_denied') || message.includes('permission denied')) return 403;
     if (message.includes('too many requests') || message.includes('resource_exhausted')) return 429;
     if (message.includes('service unavailable') || message.includes('unavailable')) return 503;
     if (message.includes('aborted') || message.includes('aborterror')) return 504;
     if (message.includes('timeout') || message.includes('timed out')) return 504;
     return 500;
+}
+
+class InvoiceResponseError extends Error {
+    readonly status = 422;
 }
 
 type InvoiceItem = {
@@ -54,35 +60,32 @@ function normalizeAiResponse(text: string) {
     try {
         parsed = JSON.parse(text);
     } catch {
-        throw new Error('La IA devolvió una respuesta que no se pudo interpretar. Intenta nuevamente.');
+        throw new InvoiceResponseError('La IA devolvió una respuesta que no se pudo interpretar. Intenta nuevamente.');
     }
 
     if (!parsed || typeof parsed !== 'object') {
-        throw new Error('La IA devolvió una respuesta vacía o inválida.');
+        throw new InvoiceResponseError('La IA devolvió una respuesta vacía o inválida.');
     }
 
     const data = parsed as Record<string, unknown>;
     const rawItems = Array.isArray(data.invoiceItems) ? data.invoiceItems : [];
     const invoiceItems: InvoiceItem[] = rawItems.map((rawItem, index) => {
-        if (!rawItem || typeof rawItem !== 'object') throw new Error(`El producto ${index + 1} tiene un formato inválido.`);
+        if (!rawItem || typeof rawItem !== 'object') throw new InvoiceResponseError(`El producto ${index + 1} tiene un formato inválido.`);
         const item = rawItem as Record<string, unknown>;
         const code = String(item.code ?? '').trim();
         const quantity = Number(item.quantity);
         const totalNet = Number(item.totalNet);
-        const extractedUnitValue = Number(item.netUnitValue);
-        const netUnitValue = Number.isFinite(totalNet) && Number.isFinite(quantity) && quantity > 0
-            ? totalNet / quantity
-            : extractedUnitValue;
+        const netUnitValue = totalNet / quantity;
 
-        if (!code) throw new Error(`La IA no identificó el SKU del producto ${index + 1}.`);
-        if (!Number.isInteger(quantity) || quantity <= 0) throw new Error(`La cantidad del SKU ${code} es inválida.`);
-        if (!Number.isFinite(totalNet) || totalNet < 0) throw new Error(`El total neto del SKU ${code} es inválido.`);
-        if (!Number.isFinite(netUnitValue) || netUnitValue < 0) throw new Error(`El costo unitario del SKU ${code} es inválido.`);
+        if (!code) throw new InvoiceResponseError(`La IA no identificó el SKU del producto ${index + 1}.`);
+        if (!Number.isInteger(quantity) || quantity <= 0) throw new InvoiceResponseError(`La cantidad del SKU ${code} es inválida.`);
+        if (item.totalNet === null || item.totalNet === undefined || item.totalNet === '' || !Number.isFinite(totalNet) || totalNet < 0) throw new InvoiceResponseError(`El total neto del SKU ${code} es inválido.`);
+        if (!Number.isFinite(netUnitValue) || netUnitValue < 0) throw new InvoiceResponseError(`El costo unitario del SKU ${code} es inválido.`);
 
         return { code, quantity, totalNet, netUnitValue };
     });
 
-    if (invoiceItems.length === 0) throw new Error('La IA no encontró productos en el documento.');
+    if (invoiceItems.length === 0) throw new InvoiceResponseError('La IA no encontró productos en el documento.');
 
     return {
         documentNumber: String(data.documentNumber ?? '').replace(/\D/g, ''),
@@ -107,6 +110,7 @@ function publicErrorMessage(status: number, error: unknown) {
 }
 
 export async function POST(req: NextRequest) {
+    const startedAt = Date.now();
     try {
         const formData = await req.formData();
         const entries = formData.getAll('files');
@@ -149,6 +153,10 @@ export async function POST(req: NextRequest) {
             );
         }
 
+        if (!process.env.GEMINI_API_KEY?.trim()) {
+            return NextResponse.json({ error: 'Falta configurar GEMINI_API_KEY en el servidor.' }, { status: 503 });
+        }
+
         const mediaParts = await Promise.all(files.map(async (file) => ({
             inlineData: {
                 mimeType: file.type,
@@ -164,14 +172,17 @@ Extrae todos los ítems de forma consolidada en un único listado.
 
 REGLAS CRÍTICAS DE EXTRACCIÓN:
 1. Para cada producto, identifica la cantidad y el monto TOTAL NETO del ítem en esa línea.
-2. Calcula matemáticamente netUnitValue dividiendo el Total Neto por la Cantidad (Total Neto / Cantidad).
-   Este valor debe ser el costo unitario real con todos los descuentos ya aplicados.
-3. Captura el número del documento. Si contiene letras u otros caracteres, devuelve solamente sus dígitos.`;
+2. Extrae el total neto final de cada línea con sus descuentos ya aplicados. No calcules costos unitarios: el servidor hará esa división.
+3. Captura el número del documento. Si contiene letras u otros caracteres, devuelve solamente sus dígitos.
+4. Devuelve únicamente el JSON solicitado, sin explicaciones ni cálculos intermedios. Incluye las líneas de todas las páginas y conserva cada SKU como texto.`;
 
         let lastError: unknown;
 
         for (let attempt = 0; attempt < MODEL_ATTEMPTS.length; attempt += 1) {
-            const { model, timeout } = MODEL_ATTEMPTS[attempt];
+            const { model } = MODEL_ATTEMPTS[attempt];
+            const remaining = PROCESSING_BUDGET_MS - (Date.now() - startedAt);
+            if (remaining < 2_000 || req.signal.aborted) throw lastError ?? new DOMException('El análisis superó su tiempo disponible.', 'TimeoutError');
+            const timeout = Math.min(MODEL_ATTEMPTS[attempt].timeout, remaining);
             const ai = new GoogleGenAI({
                 apiKey: process.env.GEMINI_API_KEY,
                 httpOptions: {
@@ -185,6 +196,8 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                     model,
                     contents: [...mediaParts, promptText],
                     config: {
+                        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW, includeThoughts: false },
+                        abortSignal: AbortSignal.any([req.signal, AbortSignal.timeout(timeout)]),
                         responseMimeType: 'application/json',
                         responseSchema: {
                             type: Type.OBJECT,
@@ -200,10 +213,9 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                                         properties: {
                                             code: { type: Type.STRING, description: 'Código único o SKU del producto' },
                                             quantity: { type: Type.INTEGER, description: 'Cantidad de unidades' },
-                                            netUnitValue: { type: Type.NUMBER, description: 'Valor unitario neto final' },
                                             totalNet: { type: Type.NUMBER, description: 'Monto total neto final de la línea' },
                                         },
-                                        required: ['code', 'quantity', 'netUnitValue', 'totalNet'],
+                                        required: ['code', 'quantity', 'totalNet'],
                                     },
                                 },
                             },
@@ -212,23 +224,28 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                     },
                 });
 
-                if (!response.text) throw new Error('La IA no devolvió respuesta.');
-                return NextResponse.json(normalizeAiResponse(response.text));
+                if (response.candidates?.some(candidate => candidate.finishReason === 'MAX_TOKENS')) {
+                    throw new InvoiceResponseError('La respuesta quedó incompleta. Divide el documento en grupos de páginas más pequeños e intenta nuevamente.');
+                }
+                if (!response.text) throw new InvoiceResponseError('La IA no devolvió productos legibles. Revisa la claridad del documento e intenta nuevamente.');
+                const result = normalizeAiResponse(response.text);
+                console.info('Documento leído con IA', { model, attempt: attempt + 1, elapsedMs: Date.now() - startedAt, files: files.length, items: result.invoiceItems.length });
+                return NextResponse.json(result);
             } catch (error) {
                 lastError = error;
                 const status = getErrorStatus(error);
                 const hasAnotherAttempt = attempt < MODEL_ATTEMPTS.length - 1;
 
-                console.error(`Error procesando documento con ${model} (intento ${attempt + 1}):`, error);
-                if (!hasAnotherAttempt || !TRANSIENT_STATUS_CODES.has(status)) throw error;
+                console.error('Error leyendo documento con IA', { model, attempt: attempt + 1, status, elapsedMs: Date.now() - startedAt });
+                if (!hasAnotherAttempt || !TRANSIENT_STATUS_CODES.has(status) || req.signal.aborted) throw error;
                 await wait(1_000 + Math.floor(Math.random() * 300));
             }
         }
 
         throw lastError ?? new Error('No fue posible procesar el documento.');
     } catch (error) {
-        console.error('Error procesando documento con IA:', error);
         const upstreamStatus = getErrorStatus(error);
+        console.error('No se pudo leer el documento con IA', { status: upstreamStatus, elapsedMs: Date.now() - startedAt });
         const responseStatus = upstreamStatus >= 400 && upstreamStatus < 500
             ? upstreamStatus
             : TRANSIENT_STATUS_CODES.has(upstreamStatus) ? upstreamStatus : 500;
