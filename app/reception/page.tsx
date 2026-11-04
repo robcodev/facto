@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { checkSkuInBsale, submitStockReception, getBsaleOffices } from './actions';
 import type { BsaleOffice } from './types';
 
@@ -267,6 +268,7 @@ export default function RecepcionPage() {
                 <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-blue-700">Ingreso de mercadería</p>
                 <h1 className="text-2xl font-bold text-gray-800">Recepción de stock</h1>
                 <p className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-600">Carga el documento, revisa los productos y confirma la recepción en Bsale cuando todo esté correcto.</p>
+                <Link href="/reception/products" className="mt-4 inline-flex rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-800">Crear productos desde un documento →</Link>
             </header>
 
             {/* PASO 1: Subida de Archivos y Botón de Inicio Manual siempre visible */}

@@ -93,6 +93,22 @@ function normalizeAiResponse(text: string) {
     };
 }
 
+function normalizeCatalogResponse(text: string) {
+    let data: Record<string, unknown>;
+    try { data = JSON.parse(text); } catch { throw new InvoiceResponseError('No pudimos interpretar la propuesta de productos.'); }
+    if (!data || typeof data !== 'object' || !Array.isArray(data.invoiceItems) || !data.invoiceItems.length) throw new InvoiceResponseError('No encontramos productos en el documento.');
+    if (data.hasMoreItems === true || data.invoiceItems.length > 200) throw new InvoiceResponseError('El documento supera 200 variantes. Divídelo antes de continuar.');
+    const amount = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+    const catalogItems = data.invoiceItems.map(value => {
+        if (!value || typeof value !== 'object') throw new InvoiceResponseError('Una fila del documento tiene un formato inválido.');
+        const row = value as Record<string, unknown>, quantity = amount(row.quantity), total = amount(row.totalNet), price = amount(row.salePrice);
+        return { code: String(row.code ?? '').trim(), productName: String(row.productName ?? '').trim(), variantName: String(row.variantName ?? '').trim(), quantity,
+            cost: total !== null && quantity !== null && quantity > 0 ? total / quantity : amount(row.netUnitValue),
+            priceGross: price === null || typeof row.salePriceIncludesVat !== 'boolean' ? null : row.salePriceIncludesVat ? price : Math.round(price * 1.19) };
+    });
+    return { documentNumber: String(data.documentNumber ?? '').replace(/\D/g, ''), catalogItems };
+}
+
 function publicErrorMessage(status: number, error: unknown) {
     if (status === 403) {
         return 'El proyecto asociado a GEMINI_API_KEY no tiene permiso para generar contenido. Configura otra clave habilitada o solicita acceso a Google AI.';
@@ -167,7 +183,13 @@ export async function POST(req: NextRequest) {
         const requestedDocumentType = ['FACTURA', 'GUÍA', 'OTRO'].includes(String(formData.get('documentType')))
             ? String(formData.get('documentType')).toLocaleLowerCase('es-CL')
             : 'factura';
-        const promptText = `Analiza los archivos adjuntos del documento de compra seleccionado como “${requestedDocumentType}” (pueden ser una o más páginas).
+        const catalogMode = formData.get('mode') === 'catalog';
+        const promptText = catalogMode ? `Lee el documento y propone productos padre y variantes para una revisión humana antes de crear un catálogo en Bsale.
+Cada SKU corresponde a una variante. Variantes del mismo modelo pueden compartir productName y diferir en variantName (talla, color, tamaño o presentación). No agrupes modelos distintos. Si no puedes separar el nombre, conserva la descripción completa en productName y deja variantName vacío para revisión; no inventes variantes.
+Conserva cada SKU como texto, incluidos ceros iniciales. Si falta SKU, cantidad, costo o precio, devuelve null para números y cadena vacía para textos. Nunca inventes costos, cantidades ni precios. La cantidad es la cantidad a recepcionar, no dimensiones o capacidad del producto.
+Extrae costo unitario NETO en netUnitValue o total NETO final de la línea en totalNet cuando estén claramente identificados, después de los descuentos de esa línea. Un precio de venta no es un costo. No confundas el total de la factura con el total de una línea.
+Devuelve salePrice únicamente si hay un precio de VENTA explícito. salePriceIncludesVat será true si incluye IVA, false si el documento dice que es neto, y null si no está aclarado. No calcules ni sugieras márgenes.
+Lee todas las páginas. Devuelve como máximo 200 filas; si hay más, hasMoreItems=true. Devuelve solo el JSON solicitado.` : `Analiza los archivos adjuntos del documento de compra seleccionado como “${requestedDocumentType}” (pueden ser una o más páginas).
 Extrae todos los ítems de forma consolidada en un único listado.
 
 REGLAS CRÍTICAS DE EXTRACCIÓN:
@@ -199,7 +221,19 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                         thinkingConfig: { thinkingLevel: ThinkingLevel.LOW, includeThoughts: false },
                         abortSignal: AbortSignal.any([req.signal, AbortSignal.timeout(timeout)]),
                         responseMimeType: 'application/json',
-                        responseSchema: {
+                        ...(catalogMode ? { responseJsonSchema: {
+                            type: 'object',
+                            properties: {
+                                documentNumber: { type: 'string' }, hasMoreItems: { type: 'boolean' },
+                                invoiceItems: { type: 'array', items: {
+                                    type: 'object', properties: {
+                                        code: { type: 'string' }, productName: { type: 'string' }, variantName: { type: 'string' },
+                                        quantity: { type: ['number', 'null'] }, netUnitValue: { type: ['number', 'null'] }, totalNet: { type: ['number', 'null'] },
+                                        salePrice: { type: ['number', 'null'] }, salePriceIncludesVat: { type: ['boolean', 'null'] },
+                                    }, required: ['code', 'productName', 'variantName', 'quantity', 'netUnitValue', 'totalNet', 'salePrice', 'salePriceIncludesVat'],
+                                } },
+                            }, required: ['documentNumber', 'hasMoreItems', 'invoiceItems'],
+                        } } : { responseSchema: {
                             type: Type.OBJECT,
                             properties: {
                                 documentNumber: {
@@ -220,7 +254,7 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                                 },
                             },
                             required: ['invoiceItems', 'documentNumber'],
-                        },
+                        } }),
                     },
                 });
 
@@ -228,8 +262,8 @@ REGLAS CRÍTICAS DE EXTRACCIÓN:
                     throw new InvoiceResponseError('La respuesta quedó incompleta. Divide el documento en grupos de páginas más pequeños e intenta nuevamente.');
                 }
                 if (!response.text) throw new InvoiceResponseError('La IA no devolvió productos legibles. Revisa la claridad del documento e intenta nuevamente.');
-                const result = normalizeAiResponse(response.text);
-                console.info('Documento leído con IA', { model, attempt: attempt + 1, elapsedMs: Date.now() - startedAt, files: files.length, items: result.invoiceItems.length });
+                const result = catalogMode ? normalizeCatalogResponse(response.text) : normalizeAiResponse(response.text);
+                console.info('Documento leído con IA', { model, attempt: attempt + 1, elapsedMs: Date.now() - startedAt, files: files.length, items: 'invoiceItems' in result ? result.invoiceItems.length : result.catalogItems.length });
                 return NextResponse.json(result);
             } catch (error) {
                 lastError = error;

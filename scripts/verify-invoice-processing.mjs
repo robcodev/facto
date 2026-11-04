@@ -11,9 +11,10 @@ function load(google) {
     new Function('require', 'module', 'exports', js)(name => name === '@google/genai' ? google : name === 'next/server' ? { NextResponse: { json: Response.json.bind(Response) } } : nativeRequire(name), m, m.exports);
     return m.exports;
 }
-function request(files = [new File(['%PDF-fixture'], 'invoice.pdf', { type: 'application/pdf' })], signal) {
+function request(files = [new File(['%PDF-fixture'], 'invoice.pdf', { type: 'application/pdf' })], signal, mode) {
     const data = new FormData();
     data.set('documentType', 'FACTURA');
+    if (mode) data.set('mode', mode);
     for (const file of files) data.append('files', file);
     return new Request('https://example.test/api/process-invoice', { method: 'POST', body: data, signal });
 }
@@ -44,6 +45,18 @@ async function fixtures() {
         assert.ok(clients[0].httpOptions.timeout > 36000);
         assert.ok(clients[0].httpOptions.timeout < route.maxDuration * 1000);
         assert.deepEqual(calls[0].config.responseSchema.properties.invoiceItems.items.required, ['code', 'quantity', 'totalNet']);
+        reset([() => ({ text: JSON.stringify({ documentNumber: '456', hasMoreItems: false, invoiceItems: [
+            { code: '0007', productName: 'Modelo', variantName: 'M', quantity: 2, totalNet: 10000, salePrice: 10000, salePriceIncludesVat: false },
+            { code: '', productName: 'Modelo', variantName: 'L', quantity: null, netUnitValue: null, salePrice: null },
+            { code: '0009', productName: 'Otro', variantName: '', quantity: 1, totalNet: 0, salePrice: 5000, salePriceIncludesVat: null },
+        ] }) })]);
+        response = await route.POST(request(undefined, undefined, 'catalog')); body = await response.json();
+        assert.equal(response.status, 200); assert.equal(body.catalogItems.length, 3);
+        assert.equal(body.catalogItems[0].code, '0007'); assert.equal(body.catalogItems[0].cost, 5000); assert.equal(body.catalogItems[0].priceGross, 11900);
+        assert.equal(body.catalogItems[1].cost, null); assert.equal(body.catalogItems[1].quantity, null); assert.equal(body.catalogItems[1].priceGross, null);
+        assert.equal(body.catalogItems[2].cost, 0); assert.equal(body.catalogItems[2].priceGross, null, 'Unknown IVA must remain for manual review');
+        reset([() => ({ text: JSON.stringify({ hasMoreItems: true, invoiceItems: [{ code: 'x' }] }) })]);
+        response = await route.POST(request(undefined, undefined, 'catalog')); assert.equal(response.status, 422);
         reset([() => { throw new ApiError(504); }, () => ok()]);
         response = await route.POST(request()); assert.equal(response.status, 200); assert.equal(calls.length, 2);
         assert.equal(calls[1].model, 'gemini-3.7-flash');
@@ -96,4 +109,26 @@ async function live() {
     assert.equal(result.invoiceItems.find(item => item.code === 'TEST456')?.netUnitValue, 5000);
     console.log(JSON.stringify({ test: 'synthetic-two-page-pdf', status: response.status, pages: 2, items: result.invoiceItems.length, elapsedMs: Math.round(performance.now() - start), amountsVerified: true }));
 }
-if (process.argv.includes('--live')) await live(); else await fixtures();
+async function liveCatalog() {
+    nativeRequire('@next/env').loadEnvConfig(process.cwd(), true);
+    const { PDFDocument, StandardFonts } = nativeRequire('pdf-lib');
+    const pdf = await PDFDocument.create(), font = await pdf.embedFont(StandardFonts.Helvetica);
+    for (const line of [
+        'SKU 000123 | GUANTE MAR AZUL talla M | Cantidad 2 | Costo unitario neto CLP 1000 | Precio venta IVA incluido CLP 2990',
+        'SKU 000124 | GUANTE MAR AZUL talla L | Cantidad 3 | Sin costo ni precio de venta indicado',
+    ]) {
+        const page = pdf.addPage([842, 595]);
+        page.drawText('DOCUMENTO DE PRUEBA - FOLIO 456', { x: 30, y: 550, size: 16, font });
+        page.drawText(line, { x: 30, y: 500, size: 10, font });
+    }
+    const route = load(nativeRequire('@google/genai')), start = performance.now();
+    const response = await route.POST(request([new File([await pdf.save()], 'catalog-fixture.pdf', { type: 'application/pdf' })], undefined, 'catalog'));
+    const body = await response.json();
+    assert.equal(response.status, 200, body.error); assert.equal(body.catalogItems.length, 2);
+    const first = body.catalogItems.find(r => r.code === '000123'), second = body.catalogItems.find(r => r.code === '000124');
+    assert.equal(first.quantity, 2); assert.equal(first.cost, 1000); assert.equal(first.priceGross, 2990);
+    assert.equal(second.quantity, 3); assert.equal(second.cost, null); assert.equal(second.priceGross, null);
+    assert.equal(first.productName, second.productName); assert.notEqual(first.variantName, second.variantName);
+    console.log(JSON.stringify({ test: 'live-catalog-synthetic-two-page-pdf', pages: 2, variants: 2, groupingVerified: true, missingAmountsPreserved: true, elapsedMs: Math.round(performance.now() - start), bsaleWrites: 0 }));
+}
+if (process.argv.includes('--live-catalog')) await liveCatalog(); else if (process.argv.includes('--live')) await live(); else await fixtures();
