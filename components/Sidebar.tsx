@@ -74,6 +74,8 @@ export default function Sidebar() {
                 <p className="facto-nav-heading mt-6">Gestión del negocio</p>
                 <Collection id="commercial-data-navigation" label="Datos comerciales" icon="chart" items={commercial} pathname={pathname} />
                 <Collection id="finance-navigation" label="Finanzas" icon="money" items={finance} pathname={pathname} />
+                <p className="facto-nav-heading mt-6">Herramientas</p>
+                <NavigationLink item={{ href: '/sandbox', label: 'Laboratorio', icon: 'spark' }} pathname={pathname} />
             </nav>
             <form action={logout} className="facto-sidebar-footer"><button type="submit" className="facto-nav-link w-full"><Icon name="logout" /><span>Cerrar sesión</span></button></form>
         </div>

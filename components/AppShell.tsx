@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
 
 const sections = [
+    ['/sandbox', 'Herramientas', 'Laboratorio'],
     ['/reception', 'Operaciones', 'Recepción de stock'], ['/full', 'Operaciones', 'Mercado Libre Full'],
     ['/prices', 'Operaciones', 'Precios por lotes'], ['/web-catalog', 'Operaciones', 'Publicación web'],
     ['/picking', 'Operaciones', 'Picking pedidos web'], ['/labels', 'Operaciones', 'Etiquetas ZPL'],
