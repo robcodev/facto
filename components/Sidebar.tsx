@@ -72,6 +72,7 @@ export default function Sidebar() {
                 <p className="facto-nav-heading">Operaciones</p>
                 {operational.map(item => <NavigationLink key={item.href} item={item} pathname={pathname} />)}
                 <p className="facto-nav-heading mt-6">Gestión del negocio</p>
+                <NavigationLink item={{ href: '/quotations', label: 'Cotizaciones mayoristas', icon: 'check' }} pathname={pathname} />
                 <Collection id="commercial-data-navigation" label="Datos comerciales" icon="chart" items={commercial} pathname={pathname} />
                 <Collection id="finance-navigation" label="Finanzas" icon="money" items={finance} pathname={pathname} />
                 <p className="facto-nav-heading mt-6">Herramientas</p>
