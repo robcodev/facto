@@ -29,7 +29,7 @@ async function save(ctx: Context, p: Project) {
   if (r.error) throw storageError(); if (!r.data) throw new QuoteError('Otra sesión guardó cambios. Recarga la cotización antes de continuar; tu edición sigue en pantalla.', 409); return r.data as Project;
 }
 export async function create(ctx: Context, name: unknown) {
-  const document: Document = { name: z.string().trim().min(2).max(160).parse(name), market: 'undefined', sources: [], items: [], proposals: [], messages: [], history: [] };
+  const document: Document = { name: z.string().trim().min(2).max(160).parse(name), market: 'chile', sources: [], items: [], proposals: [], messages: [], history: [] };
   const r = await ctx.db.from('quotation_projects').insert({ organization_id: ctx.orgId, created_by: ctx.userId, document }).select('*').single();
   if (r.error) throw storageError(); return r.data as Project;
 }
@@ -39,12 +39,13 @@ async function mutate(ctx: Context, id: string, change: (d: Document) => void, v
 }
 function message(d: Document, role: 'user' | 'assistant', text: string, itemIds: string[] = []) { d.messages.push({ id: crypto.randomUUID(), role, text, itemIds, at: new Date().toISOString() }); }
 export const actionSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('enqueue'), id: z.uuid(), version: z.number().int(), itemIds: z.array(z.uuid()).min(1).max(500), refresh: z.boolean().default(false), componentId: z.uuid().optional(), componentsOnly: z.boolean().default(false) }),
   z.object({ action: z.literal('create'), name: z.string().min(2).max(160) }),
   z.object({ action: z.literal('edit'), id: z.uuid(), version: z.number().int(), itemId: z.uuid(), requirements: requirementSchema }),
   z.object({ action: z.literal('accept'), id: z.uuid(), version: z.number().int(), proposalId: z.uuid() }),
   z.object({ action: z.literal('reject'), id: z.uuid(), version: z.number().int(), proposalId: z.uuid() }),
   z.object({ action: z.literal('undo'), id: z.uuid(), version: z.number().int(), historyId: z.uuid() }),
-  z.object({ action: z.literal('market'), id: z.uuid(), version: z.number().int(), market: z.enum(['undefined', 'chile', 'international']) }),
+  z.object({ action: z.literal('market'), id: z.uuid(), version: z.number().int(), market: z.literal('chile') }),
   z.object({ action: z.literal('select'), id: z.uuid(), version: z.number().int(), itemId: z.uuid(), alternativeId: z.uuid().nullable(), componentId: z.uuid().optional() }),
   z.object({ action: z.literal('chat'), id: z.uuid(), version: z.number().int(), text: z.string().trim().min(1).max(50000), itemIds: z.array(z.uuid()).max(10), sourceId: z.uuid().optional() }),
   z.object({ action: z.literal('research'), id: z.uuid(), itemId: z.uuid(), refresh: z.boolean().default(false), componentId: z.uuid().optional() }),
@@ -56,6 +57,17 @@ export const actionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('common_unit'), id: z.uuid(), version: z.number().int(), unit: z.string().trim().min(1).max(80) }),
 ]);
 export async function action(ctx: Context, input: z.infer<typeof actionSchema>) {
+  if (input.action === 'enqueue') return mutate(ctx,input.id,d=>{
+    if(d.researchRun && ['queued','running'].includes(d.researchRun.state)) throw new QuoteError('La investigación ya está en marcha. Puedes seguir revisando resultados.',409);
+    activateInterpretations(d); d.market='chile';
+    const jobs: import('./core').ResearchJob[]=[];
+    for(const id of new Set(input.itemIds)) {
+      const item=d.items.find(i=>i.id===id); if(!item) throw new QuoteError('Ítem no encontrado.');
+      if(input.componentsOnly) for(const c of item.kit?.components || []) jobs.push({itemId:id,componentId:c.id,refresh:input.refresh,state:'queued'});
+      else jobs.push({itemId:id,componentId:input.componentId,refresh:input.refresh,state:'queued'});
+    }
+    d.researchRun={token:crypto.randomUUID(),state:'queued',jobs,updatedAt:new Date().toISOString()};
+  },input.version);
   if (input.action === 'create') return create(ctx, input.name);
   if (input.action === 'chat') return chat(ctx, input);
   if (input.action === 'research') return research(ctx, input.id, input.itemId, input.refresh, input.componentId);
@@ -99,7 +111,7 @@ export async function action(ctx: Context, input: z.infer<typeof actionSchema>) 
       if (!target) throw new QuoteError('Componente no encontrado.', 404);
       if (input.alternativeId) {
         const a = target.alternatives.find(a => a.id === input.alternativeId);
-        if (!a || a.match === 'insufficient' || a.requirementRevision !== item.revision || !ready(item.requirements)) throw new QuoteError('Esta alternativa no cumple las condiciones para selección. Revisa los requisitos y vuelve a buscar.');
+        if (!a || !a.review?.chileSupported || a.match === 'insufficient' || a.requirementRevision !== item.revision || !ready(item.requirements)) throw new QuoteError('Esta alternativa no cumple las condiciones para selección. Revisa los requisitos y vuelve a buscar.');
       }
       target.selectedId = input.alternativeId;
       if (!input.componentId) item.selectedMode = 'product';
@@ -108,7 +120,7 @@ export async function action(ctx: Context, input: z.infer<typeof actionSchema>) 
 }
 function ai(timeout = 65000) { if (!process.env.GEMINI_API_KEY) throw new QuoteError('Falta configurar Gemini en el servidor.', 503); return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout } }); }
 const model = process.env.QUOTATIONS_GEMINI_MODEL || 'gemini-3.8-flash';
-async function settle(ctx: Context, id: string, change: (d: Document) => void) {
+export async function updateDocument(ctx: Context, id: string, change: (d: Document) => void) {
   for (let n = 0; n < 4; n++) { try { return await mutate(ctx, id, change); } catch (e) { if (!(e instanceof QuoteError) || e.status !== 409 || n === 3) throw e; } }
   throw new QuoteError('No pudimos guardar el resultado por ediciones simultáneas.', 409);
 }
@@ -146,7 +158,7 @@ async function chat(ctx: Context, input: Extract<z.infer<typeof actionSchema>, {
       if (!proposal.itemId) proposal.requirements = normalizeRequirements(proposal.original, proposal.requirements);
       if (proposal.requirements.status === 'ready' && !ready(proposal.requirements)) proposal.requirements.status = 'clarify';
     }
-    return await settle(ctx, p.id, d => {
+    return await updateDocument(ctx, p.id, d => {
       if (d.aiLease?.token !== token) throw new QuoteError('La interpretación venció. Reintenta.', 410);
       const sourceId = source?.id || crypto.randomUUID();
       if (!source) d.sources.push({ id: sourceId, name: 'Texto pegado en el chat', text: input.text, processed: true });
@@ -161,7 +173,7 @@ async function chat(ctx: Context, input: Extract<z.infer<typeof actionSchema>, {
       message(d, 'assistant', parsed.reply, scope.map(i => i.id)); delete d.aiLease;
     });
   } catch (e) {
-    await settle(ctx, p.id, d => { if (d.aiLease?.token === token) { delete d.aiLease; message(d, 'assistant', 'No se completó la interpretación. Tu mensaje y archivos están guardados. Reintenta; las filas existentes se conservan.'); } }).catch(() => undefined);
+    await updateDocument(ctx, p.id, d => { if (d.aiLease?.token === token) { delete d.aiLease; message(d, 'assistant', 'No se completó la interpretación. Tu mensaje y archivos están guardados. Reintenta; las filas existentes se conservan.'); } }).catch(() => undefined);
     throw e instanceof QuoteError ? e : new QuoteError('Gemini no pudo completar la interpretación. Puedes reintentar.', 502);
   }
 }
@@ -189,7 +201,7 @@ async function interpretNext(ctx: Context, input: Extract<z.infer<typeof actionS
     } });
     const parsed = schema.parse(JSON.parse(response.text || ''));
     if (parsed.proposals.length !== batch.length || new Set(parsed.proposals.map(p => p.itemId)).size !== batch.length || parsed.proposals.some(p => !batch.some(i => i.id === p.itemId))) throw new QuoteError('La IA no devolvió todas las filas de esta tanda. Puedes reintentarla sin perder el resto.', 502);
-    return await settle(ctx, input.id, d => {
+    return await updateDocument(ctx, input.id, d => {
       if (d.aiLease?.token !== token) throw new QuoteError('La interpretación venció. Puedes reanudarla.', 410);
       const currentSource = d.sources.find(s => s.id === source.id)!;
       for (const proposal of parsed.proposals) {
@@ -210,7 +222,7 @@ async function interpretNext(ctx: Context, input: Extract<z.infer<typeof actionS
     });
   } catch (e) {
     const reason = e instanceof QuoteError ? e.message : 'No se completó esta tanda de interpretación. Puedes reanudarla; todas las filas están guardadas.';
-    await settle(ctx, input.id, d => {
+    await updateDocument(ctx, input.id, d => {
       if (d.aiLease?.token !== token) return;
       const current = d.sources.find(s => s.id === source.id)!;
       for (const row of current.importRows || []) if (batch.some(i => i.id === row.itemId) && row.state === 'running') { row.state = 'failed'; row.error = reason; }
@@ -248,7 +260,7 @@ async function research(ctx: Context, id: string, itemId: string, refresh: boole
     const extraction = await ai(25000).models.generateContent({ model, contents: `DATOS: ${JSON.stringify({ task, report: response.text, sources })}`, config: { systemInstruction: extractionPrompt(), responseMimeType: 'application/json', responseJsonSchema: geminiSchema(extractionSchema), maxOutputTokens: 6000, thinkingConfig: { thinkingLevel: 'LOW' as import('@google/genai').ThinkingLevel } } });
     const alternatives = verifyAlternatives(JSON.parse(extraction.text || ''), sources, item.revision);
     if (alternatives.length) {
-      const reviewSchema = z.object({ reviews: z.array(z.object({ index: z.number().int().nonnegative(), identitySupported: z.boolean(), priceSupported: z.boolean(), presentationSupported: z.boolean(), vatSupported: z.boolean(), availabilitySupported: z.boolean(), issues: z.array(z.string().max(1200)).max(12) })).max(3) });
+      const reviewSchema = z.object({ reviews: z.array(z.object({ index: z.number().int().nonnegative(), identitySupported: z.boolean(), priceSupported: z.boolean(), presentationSupported: z.boolean(), vatSupported: z.boolean(), availabilitySupported: z.boolean(), chileSupported: z.boolean(), chileEvidence: z.string().max(2000), issues: z.array(z.string().max(1200)).max(12) })).max(3) });
       const reviewed = await ai(20000).models.generateContent({ model, contents: `DATOS: ${JSON.stringify({ task, report: response.text, sources, alternatives: alternatives.map((a,index) => ({ index, ...a })) })}`, config: { systemInstruction: reviewPrompt(), responseMimeType: 'application/json', responseJsonSchema: geminiSchema(reviewSchema), maxOutputTokens: 3000, thinkingConfig: { thinkingLevel: 'LOW' as import('@google/genai').ThinkingLevel } } });
       const checks = reviewSchema.parse(JSON.parse(reviewed.text || '')).reviews;
       if (checks.length !== alternatives.length || new Set(checks.map(c => c.index)).size !== alternatives.length || checks.some(c => c.index >= alternatives.length)) throw new QuoteError('La revisión no cubrió todas las alternativas. Reintenta este producto.', 502);
@@ -259,25 +271,25 @@ async function research(ctx: Context, id: string, itemId: string, refresh: boole
         if (!check.vatSupported) a.vat = 'unknown';
         if (!check.availabilitySupported) a.availability = 'Por confirmar';
         a.pending = [a.pending, ...check.issues].filter(Boolean).join('\n');
-        a.review = { checked: true, issues: [...check.issues] };
+        a.review = { checked: true, issues: [...check.issues], chileSupported: check.chileSupported, chileEvidence: check.chileEvidence };
         if (!componentId && item.kit && !item.kit.components.every(c => a.kitCoverage?.some(k => k.componentId === c.id && k.quantity === c.quantityPerSet))) {
           a.match = 'insufficient'; a.pending += '\nLa fuente no confirma toda la composición y proporción del set.';
         }
       }
     }
-    return await settle(ctx, id, d => {
+    return await updateDocument(ctx, id, d => {
       const current = d.items.find(i => i.id === itemId)!;
       const target = componentId ? current.kit?.components.find(c => c.id === componentId) : current;
       if (!target || target.search.token !== token || current.revision !== item.revision || d.market !== p.document.market) throw new QuoteError('Los requisitos o el país cambiaron durante la búsqueda. Repite la búsqueda.', 410);
       if (target.alternatives.length) (target.researchHistory ||= []).push({ at: new Date().toISOString(), alternatives: structuredClone(target.alternatives) });
       const selected = target.alternatives.find(a => a.id === target.selectedId);
-      target.alternatives = [...(selected ? [selected] : []), ...alternatives];
+      target.alternatives = [...(selected ? [selected] : []), ...alternatives.filter(a => a.review?.chileSupported && a.review.chileEvidence?.trim())];
       target.search = { state: 'done', attempts: target.search.attempts, queries: grounding.webSearchQueries, support: grounding.groundingSupports, report: response.text, sources };
-      message(d, 'assistant', `Ítem ${current.order}${part ? ` · ${part.name}` : ''}: ${alternatives.length} alternativa(s) investigada(s) y revisada(s). Confirma condiciones con el proveedor antes de elegir.`, [itemId]);
+      message(d, 'assistant', `Ítem ${current.order}${part ? ` · ${part.name}` : ''}: ${alternatives.filter(a=>a.review?.chileSupported && a.review.chileEvidence?.trim()).length} alternativa(s) en Chile investigada(s) y revisada(s). Confirma condiciones con el proveedor antes de elegir.`, [itemId]);
     });
   } catch (e) {
     const reason = e instanceof QuoteError ? e.message : 'Falló la investigación o la revisión de este producto. Puedes reintentarlo.';
-    await settle(ctx, id, d => { const current = d.items.find(i => i.id === itemId); const target = componentId ? current?.kit?.components.find(c => c.id === componentId) : current; if (target?.search.token === token) target.search = { state: 'failed', attempts: target.search.attempts, error: reason }; }).catch(() => undefined);
+    await updateDocument(ctx, id, d => { const current = d.items.find(i => i.id === itemId); const target = componentId ? current?.kit?.components.find(c => c.id === componentId) : current; if (target?.search.token === token) target.search = { state: 'failed', attempts: target.search.attempts, error: reason }; }).catch(() => undefined);
     throw new QuoteError(reason, 502);
   }
 }

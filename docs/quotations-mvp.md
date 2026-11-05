@@ -24,13 +24,13 @@ La investigación usa Gemini con Google Search y exige consultas y fuentes de gr
 
 Cada petición guarda una reserva temporal de 180 segundos y resultados por producto o componente. Los intentos normales se limitan a tres; actualizar permite una nueva tanda explícita. Una respuesta en curso no se aplica si cambiaron requisitos o mercado. Las selecciones se conservan al actualizar, junto con el historial, y quedan pendientes de revisión si cambian los requisitos.
 
-La tabla quotation_projects guarda el documento del proyecto con control de versión. El cliente Supabase usa la sesión del usuario y RLS restringe el acceso a la empresa compartida facto-compartido. No utiliza service role. No representa espacios privados por usuario. Las versiones impiden sobrescribir cambios de otra sesión; la identidad y empresa del proyecto son inmutables.
+La tabla quotation_projects guarda el documento del proyecto con control de versión. El cliente Supabase usa la sesión del usuario y RLS restringe el acceso a la empresa compartida facto-compartido. Las peticiones interactivas usan RLS. El trabajador de servidor usa el cliente administrativo existente, valida la empresa compartida, restringe cada proyecto por empresa y comprueba el identificador vigente de ejecución. No se pasan credenciales al workflow. No representa espacios privados por usuario. Las versiones impiden sobrescribir cambios de otra sesión; la identidad y empresa del proyecto son inmutables.
 
 La migración 20261102181803_quotation_projects.sql fue aplicada al proyecto existente el 4 de noviembre de 2026 y se verificaron RLS, acceso anónimo denegado, aislamiento por empresa y rechazo de versiones antiguas. No se creó un historial general de migraciones en el proyecto alojado.
 
 ## Límites
 
-La pestaña abierta coordina las siguientes peticiones. Cerrar la página detiene la cola; una petición enviada puede terminar. Al volver, el avance persistido permite reanudar. No hay un worker durable.
+La investigación se ejecuta mediante Workflow en el servidor, con pasos independientes y cola persistida en el proyecto. Cerrar el navegador no coordina ni cancela las siguientes peticiones. En desarrollo requiere mantener el servidor activo; el entorno alojado debe disponer del runtime de Workflow. La interfaz consulta avance cada cuatro segundos. Una ejecución interrumpida conserva los resultados y permite iniciar las necesidades pendientes.
 
 Admite texto, TXT/CSV/TSV/Markdown, primera hoja de XLSX, PDF e imágenes PNG/JPG/WebP. Conserva los originales; máximo 1,5 MB por archivo y 3,5 MB por proyecto. No admite DOCX ni XLS antiguos. Los adjuntos se guardan en el documento JSON; un volumen mayor requerirá almacenamiento privado dedicado.
 
@@ -41,3 +41,11 @@ No compra, factura, envía correos ni escribe en Bsale. Los precios públicos no
 Ejecutar node lib/quotations/verify.cjs para las pruebas aisladas con Supabase y Gemini simulados. FACTO_IMPORT_FIXTURE permite añadir un archivo real de solicitud. Se verifica captura de 79 filas, interpretación de una sola fila por llamada, ausencia de conversación acumulada, correcciones protegidas, guardado y recarga, bloqueos, evidencia, cobertura de kits, cálculos de piezas, selección y actualización.
 
 Complementar con ESLint del módulo y compilación Next.js/TypeScript. La prueba de interfaz con la solicitud real conserva las 79 filas y deja 77 identificables; dos contradicciones requieren aclaración humana.
+
+## Rework Chile
+
+El mercado del MVP es Chile. Las ofertas requieren revisión con evidencia de presencia local; el dominio o moneda por sí solos no bastan. Se admiten alternativas compatibles, identificadas como tales, con selección humana. Las fuentes internacionales pueden aportar especificaciones, pero las ofertas extranjeras no se muestran ni seleccionan. Resultados anteriores sin verificación local requieren nueva investigación.
+
+La pantalla separa Solicitud y Oferta en preparación. Las recomendaciones priorizan coincidencia exacta y explican coincidencias, diferencias y pendientes; no afirman ser la opción más barata. Cada investigación tiene hasta tres alternativas, tiempos máximos por fase y límites de intentos. El estado del trabajo y la conclusión comercial son distintos.
+
+Validación automatizada: cola persistida, rechazo de inicios duplicados, ejecución obsoleta ignorada, finalización desde trabajador, filtro de ofertas extranjeras y pruebas anteriores de 79 filas y sets. La compilación registra el workflow y sus pasos. La continuidad real del entorno publicado debe verificarse durante el despliegue.

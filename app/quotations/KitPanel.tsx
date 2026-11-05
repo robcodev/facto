@@ -11,7 +11,7 @@ export default function KitPanel({ item, busy, search, select, assemble }: Props
       {part.search.error && <p className="text-sm text-rose-700">{part.search.error}</p>}
       {part.search.state === 'running' && <p className="text-sm text-indigo-700">Investigando esta pieza…</p>}
       {!part.alternatives.length && <p className="text-xs text-slate-500">Sin opciones documentadas todavía.</p>}
-      {part.alternatives.map(a => <div key={a.id} className="space-y-1 rounded-lg border border-slate-200 p-3 text-sm">
+      {part.alternatives.filter(a=>a.review?.chileSupported).map(a => <div key={a.id} className="space-y-1 rounded-lg border border-slate-200 p-3 text-sm">
         <p className="font-medium">{a.product} · {a.supplier}</p><p>{a.price === null ? 'Precio por confirmar' : `${a.price.toLocaleString('es-CL')} ${a.currency}`} · IVA {{ included: 'incluido', excluded: 'excluido', unknown: 'desconocido' }[a.vat]}</p>
         <p className="text-xs">{a.presentation} · Unidades por precio: {a.unitsPerPrice ?? 'Desconocidas'}</p><p className="text-xs">Disponibilidad publicada: {a.availability || 'Por confirmar'}</p>
         <p className="text-xs">Coincide: {a.matches}</p>{a.differences && <p className="text-xs text-amber-800">Diferencias: {a.differences}</p>}<p className="text-xs text-amber-800">{a.pending}</p>
