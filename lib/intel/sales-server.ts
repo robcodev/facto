@@ -5,9 +5,11 @@ import { identifier, object, type SourceRow } from './normalize';
 import { dayAfter, windowEnd, salesMasters, salesRelations, sourcePage, salesRecord, isPreSale, type SalesCursor } from './sales-core';
 import { prepareSalesBatch } from './sales-batch';
 
+export function salesDatabaseError(error:unknown,status:number){if(error&&!object(error).code&&status>=500)return new Error('Respuesta temporal de la base de datos: HTTP '+status+'. El lote conserva su punto de reanudación.');return error;}
+
 export async function readSalesRun(ctx: IntelContext, id: string) {
     const result = await ctx.db.from('intel_sync_runs').select('*').eq('organization_id', ctx.orgId).eq('kind', 'sales').eq('id', id).single();
-    if (result.error) throw result.error;
+    if (result.error) throw salesDatabaseError(result.error,result.status);
     return result.data;
 }
 export function publicSalesRun(run: SourceRow) {
@@ -103,9 +105,9 @@ export async function syncSalesPage(ctx: IntelContext, id: string) {
             // Count distinct, fully hydrated documents; source totals are NOT revenue reconciliation.
             const result = await ctx.db.from('intel_records').select('id', { count: 'exact', head: true }).eq('organization_id', ctx.orgId).eq('source','bsale').eq('resource', 'sales_documents').eq('run_id', run.id)
                 .eq('data->>complete', 'true').gte('data->>emissionDay', c.from).lte('data->>emissionDay', c.to);
-            if (result.error) throw result.error;
+            if (result.error) throw salesDatabaseError(result.error,result.status);
             const excluded = await ctx.db.from('intel_records').select('id', { count: 'exact', head: true }).eq('organization_id', ctx.orgId).eq('source','bsale').eq('resource', 'sales_excluded').eq('run_id', run.id).gte('data->>emissionDay', c.from).lte('data->>emissionDay', c.to);
-            if (excluded.error) throw excluded.error;
+            if (excluded.error) throw salesDatabaseError(excluded.error,excluded.status);
             if (c.expected !== null && (result.count ?? 0) + (excluded.count ?? 0) !== c.expected) throw new Error('La cantidad importada más las preventas omitidas no coincide con Bsale. El periodo no se marcará completo.');
             const window = salesRecord('sales_windows', { id: Date.parse(c.from) / 1000, from: c.from, to: c.to, sourceCount: c.expected, importedCount: result.count, excludedCount: excluded.count, checkedAt: new Date().toISOString(), reconciliation: 'document_count_only' });
             window.external_id = `${c.from}:${c.to}`; batch = [window]; c.completedWindows++;
@@ -114,10 +116,10 @@ export async function syncSalesPage(ctx: IntelContext, id: string) {
         } else throw new Error('Cursor de importación no reconocido.');
         const records = batch.map(record => ({ ...record, content_hash: createHash('sha256').update(JSON.stringify({ raw: record.raw, data: record.data })).digest('hex') }));
         const result = await ctx.db.rpc('intel_commit_sales_page', { p_org: ctx.orgId, p_run: id, p_revision: run.stage, p_rows: records, p_cursor: c, p_done: c.phase === 'done' });
-        if (result.error) throw result.error;
+        if (result.error) throw salesDatabaseError(result.error,result.status);
         return publicSalesRun(await readSalesRun(ctx, id));
     } catch (error) {
-        await ctx.db.from('intel_sync_runs').update({ last_error: error instanceof Error ? error.message : String(object(error).message ?? 'No se guardó el lote. Puedes reanudar.'), updated_at: new Date().toISOString() }).eq('organization_id', ctx.orgId).eq('id', id).eq('stage', run.stage);
+        await ctx.db.from('intel_sync_runs').update({ last_error: (error instanceof Error ? error.message : String(object(error).message ?? '')) || 'La base de datos no devolvió un detalle del error. El lote conserva su punto de reanudación.', updated_at: new Date().toISOString() }).eq('organization_id', ctx.orgId).eq('id', id).eq('stage', run.stage);
         throw error;
     }
 }

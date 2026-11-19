@@ -1,4 +1,5 @@
 import 'server-only';
+import { MAX_SALES_AGE_DAYS } from './calendar-range';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { scan, type SourceRow } from '../intelligence/history-server';
 import { historyCoverage } from '../intelligence/history-core';
@@ -47,3 +48,11 @@ export async function readCalendarInput(ctx:Context):Promise<CalendarInput>{
 }
 const cache=new Map<number,{pending:boolean;expires:number;value:Promise<CalendarInput>}>();
 export async function calendarInput(ctx:Context,fresh=false){const old=cache.get(ctx.orgId);if(old&&(old.pending||!fresh&&old.expires>Date.now()))return old.value;if(cache.size>=3)cache.delete(cache.keys().next().value!);const entry={pending:true,expires:0,value:readCalendarInput(ctx)};cache.set(ctx.orgId,entry);try{const value=await entry.value;entry.pending=false;entry.expires=Date.now()+300000;return value;}catch(e){if(cache.get(ctx.orgId)===entry)cache.delete(ctx.orgId);throw e;}}
+
+export async function calendarSalesStatus(ctx:Context){
+ const [windows,running]=await Promise.all([scan(ctx,'sales_windows','from:data->>from,to:data->>to,reconciliation:data->>reconciliation,sourceCount:data->sourceCount,importedCount:data->importedCount,excludedCount:data->excludedCount',10000),ctx.db.from('intel_sync_runs').select('config,cursor').eq('organization_id',ctx.orgId).eq('kind','sales').eq('status','running').limit(1)]);
+ if(running.error)throw Error('No pudimos comprobar la actualización de ventas.');
+ const now=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),closed=new Date(Date.parse(now)-86400000).toISOString().slice(0,10),valid=windows.map(w=>({from:w.from??'',to:w.to??'',valid:w.reconciliation==='document_count_only'&&num(w.sourceCount)!==null&&num(w.importedCount)!==null&&num(w.importedCount)!+(num(w.excludedCount)??0)===num(w.sourceCount)})).filter(w=>w.valid);
+ const cutoff=valid.length?historyCoverage(valid,closed).to:null,ageDays=cutoff?Math.round((Date.parse(now)-Date.parse(cutoff))/86400000):null,r=running.data?.[0];
+ return {cutoff,ageDays,stale:ageDays===null||ageDays>MAX_SALES_AGE_DAYS,run:r?{from:String(r.config?.from??''),to:String(r.config?.to??''),completedDocuments:Number(r.cursor?.completedDocuments??0),state:String(r.config?.worker?.state??(r.config?.background?'running':'paused')),phase:r.cursor?.clientsComplete?r.cursor?.phase??'list':'clients'}:null};
+}

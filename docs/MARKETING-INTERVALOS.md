@@ -1,0 +1,17 @@
+# Calendarios por intervalo — 19/11/2026
+
+El formulario permite elegir Desde y Hasta, con extremos incluidos, entre 1 y 56 días. Incluye Próximos 7/14/28 días, Resto de este mes y Próximo mes. Los accesos calculan las fechas con el día de Santiago y contemplan cambios de año y años bisiestos. Para contenido nuevo se conserva el horizonte de inicio entre hoy y las próximas doce semanas; los calendarios guardados anteriores siguen disponibles.
+
+Se muestran días y espacios esperados antes de generar. Las semanas internas se calculan con el intervalo; la última puede ser parcial. Tanto las piezas como los días visibles de la agenda quedan dentro del rango elegido. Los formatos semanales mantienen sus posiciones relativas y se omiten los que caigan fuera de una semana parcial, sin agregarlos después de Hasta. La referencia anual de esa semana usa igual cantidad de días.
+
+Generar calendario nuevo relee los datos disponibles y quita la vista previa anterior mientras procesa, para no confundir un calendario viejo con el resultado de una solicitud nueva. Cambiar fechas marca la configuración pendiente. Los calendarios guardados conservan fechas y evidencia originales; para guardar una propuesta hay que usar Guardar calendario. La nueva versión de método es collection-banners-interval-v6. El servidor sigue admitiendo configuraciones antiguas con inicio y semanas; no cambia su almacenamiento ni necesita migraciones.
+
+El nuevo panel Ventas disponibles para la propuesta consulta el último período conciliado y el avance del importador. Distingue carga activa, reintento y carga detenida. No presenta el avance como una venta o período verificado. Un error de lectura se informa y no se convierte en una fecha inventada.
+
+Si el corte tiene más de 21 días, la generación normal pide actualizar Intel. El equipo puede elegir expresamente Permitir borrador con el último corte disponible. Esa elección queda en la configuración y el calendario conserva el corte real, su antigüedad y una advertencia visible. No se habilita por defecto ni equivale a actualizar ventas, stock o Google. Con datos recientes no se necesita activar esta opción.
+
+Se inició y verificó una importación incremental del 27/10/2026 al 18/11/2026 mediante el importador existente: 1.773 documentos de origen, 1.099 importados y 674 preventas excluidas. Los dos períodos se cerraron con conciliación de conteo, sin presentarla como conciliación de ingresos. No se alteraron documentos en Bsale.
+
+El importador normaliza respuestas temporales HTTP 5xx vacías de la base de datos para que el proceso aplique sus reintentos existentes conservando el cursor. Los errores SQL con código mantienen su clasificación y los fallos permanentes siguen requiriendo revisión. Esto no crea una tarea diaria ni un servicio en la nube; el proceso existente requiere el equipo encendido para futuras cargas.
+
+Pruebas: intervalos de 1, 3, 10, 12, 31 y 56 días; fechas invertidas o más de 56 días; recorte de piezas y agenda; referencia anual parcial; fin de mes, año y febrero bisiesto; configuración antigua por semanas; rechazo de datos atrasados sin consentimiento y advertencia al aceptarlos; firmas y aislamiento; rotación; banners de colección; importación por lotes; reintentos temporales y errores permanentes. Compilación completa, tipos y lint comprobados. La compilación local mostró una advertencia de trazado de archivos en el módulo de investigación web, ajeno a estos cambios.
