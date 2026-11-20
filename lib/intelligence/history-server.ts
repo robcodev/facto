@@ -5,9 +5,30 @@ type Context={db:SupabaseClient;orgId:number};
 const num=(v:unknown)=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))?Number(v):null;
 const yes=(v:unknown)=>[true,1,'1','true'].includes(v as never);
 export type SourceRow={external_id:string;run_id:string;name?:string;product_id?:string|null;day?:string;from?:string;to?:string;reconciliation?:string;sourceCount?:unknown;importedCount?:unknown;excludedCount?:unknown;code?:unknown;documentType?:string;state?:unknown;complete?:unknown;cancellationStatus?:unknown;cancellationDate?:unknown;isCreditNote?:unknown;documentId?:string;variantId?:string;quantity?:unknown;net?:unknown};
+// Share the read budget across calendar, trend and basket requests for one company.
+const historyReads=new Map<number,{active:number;waiting:Array<()=>void>}>();
+async function historyPage<T>(orgId:number,read:()=>PromiseLike<T>):Promise<T>{
+ let state=historyReads.get(orgId);if(!state){state={active:0,waiting:[]};historyReads.set(orgId,state);}
+ if(state.active>=3)await new Promise<void>(resolve=>state!.waiting.push(resolve));else state.active++;
+ try{return await read();}finally{const next=state.waiting.shift();if(next)next();else{state.active--;if(!state.active)historyReads.delete(orgId);}}
+}
 export async function scan(ctx:Context,resource:string,projection:string,cap:number,runId?:string){
- const rows:SourceRow[]=[];let cursor='';
- for(;;){let q=ctx.db.from('intel_records').select('external_id,run_id,'+projection).eq('organization_id',ctx.orgId).eq('source','bsale').eq('resource',resource).order('external_id').limit(1000);if(resource.startsWith('sales_'))q=q.like('resource','sales_%');if(runId)q=q.eq('run_id',runId);if(cursor)q=q.gt('external_id',cursor);const r=await q;if(r.error)throw Error('No pudimos leer el historial de '+resource+': '+r.error.message);const page=r.data as unknown as SourceRow[];rows.push(...page);if(rows.length>cap)throw Error('El historial supera el límite de '+resource+'. No se mostrará una muestra parcial como completa.');if(page.length<1000)return rows;const next=page.at(-1)!.external_id;if(next<=cursor)throw Error('La lectura histórica no avanzó.');cursor=next;}
+ const rows:SourceRow[]=[],ids=new Set<string>();let cursor='',batch=1000;
+ for(;;){
+  const r=await historyPage(ctx.orgId,()=>{let q=ctx.db.from('intel_records').select('external_id,run_id,'+projection).eq('organization_id',ctx.orgId).eq('source','bsale').eq('resource',resource).order('external_id').limit(batch);if(resource.startsWith('sales_'))q=q.like('resource','sales_%');if(runId)q=q.eq('run_id',runId);if(cursor)q=q.gt('external_id',cursor);return q;});
+  if(r.error){
+   // Retry only a timed-out page, at the same cursor. Never accept partial history.
+   const timeout=r.error.code==='57014'||/canceling statement due to statement timeout/i.test(r.error.message??'');
+   if(timeout&&batch>125){batch=Math.max(125,Math.floor(batch/2));continue;}
+   throw Error('No pudimos leer el historial de '+resource+': '+r.error.message);
+  }
+  if(!Array.isArray(r.data))throw Error('Bsale Intel no entregó una página válida de '+resource+'.');
+  const page=r.data as unknown as SourceRow[];let next=cursor;
+  for(const row of page){if(typeof row.external_id!=='string'||!row.external_id||ids.has(row.external_id))throw Error('La lectura histórica de '+resource+' no avanzó.');ids.add(row.external_id);next=row.external_id;}
+  rows.push(...page);if(rows.length>cap)throw Error('El historial supera el límite de '+resource+'. No se mostrará una muestra parcial como completa.');
+  if(page.length<batch)return rows;
+  cursor=next;
+ }
 }
 export async function readBasketHistory(ctx:Context){
  const started=Date.now(),today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),closed=new Date(Date.parse(today)-86400000).toISOString().slice(0,10);
