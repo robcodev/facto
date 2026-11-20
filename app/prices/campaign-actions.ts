@@ -81,63 +81,30 @@ export async function saveCampaignItems(listId: number, items: CampaignItemInput
         if (!Number.isInteger(listId) || listId <= 0) throw new Error('Selecciona una lista válida.');
         if (!Array.isArray(items)) throw new Error('La selección no es válida.');
         if (items.length > 5000) throw new Error('La selección es demasiado grande.');
-        const { supabase, organizationId } = await context();
-        const { data: list, error: listError } = await supabase.from('campaign_lists').select('id').eq('id', listId).eq('organization_id', organizationId).maybeSingle();
-        if (listError) throw new Error(listError.message);
-        if (!list) throw new Error('La lista no existe o no pertenece a tu empresa.');
-
         const rows = items.map((item) => {
-            if (!Number.isInteger(item.variantId) || !Number.isInteger(item.productId) || !Number.isFinite(item.discount)) throw new Error('Hay un producto inválido en la selección.');
+            if (!Number.isSafeInteger(item.variantId) || item.variantId <= 0 ||
+                !Number.isSafeInteger(item.productId) || item.productId <= 0 ||
+                !Number.isFinite(item.discount)) throw new Error('Hay un producto inválido en la selección.');
             return {
-                campaign_list_id: listId,
-                scope: 'variant',
                 bsale_product_id: item.productId,
                 bsale_variant_id: item.variantId,
                 sku: item.sku.trim(),
                 product_name: item.productName.trim(),
                 variant_name: item.variantName.trim() || null,
                 discount_override: Math.round(item.discount * 100) / 100,
-                added_by: null,
             };
         });
-        const { data: existing, error: existingError } = await supabase
-            .from('campaign_items')
-            .select('id, bsale_variant_id')
-            .eq('campaign_list_id', listId)
-            .not('bsale_variant_id', 'is', null);
-        if (existingError) throw new Error(existingError.message);
-        const existingByVariant = new Map((existing ?? []).map((row) => [Number(row.bsale_variant_id), Number(row.id)]));
-        if (replaceAll) {
-            const retained = new Set(rows.map((row) => row.bsale_variant_id));
-            const removedIds = [...existingByVariant.entries()].filter(([variantId]) => !retained.has(variantId)).map(([, id]) => id);
-            if (removedIds.length > 0) {
-                const { error: deleteError } = await supabase.from('campaign_items').delete().in('id', removedIds);
-                if (deleteError) throw new Error(deleteError.message);
-            }
-        }
-        const inserts = rows.filter((row) => !existingByVariant.has(row.bsale_variant_id));
-        if (inserts.length > 0) {
-            const { error: insertError } = await supabase.from('campaign_items').insert(inserts);
-            if (insertError) throw new Error(insertError.message);
-        }
-        const updates = rows.filter((row) => existingByVariant.has(row.bsale_variant_id));
-        for (let start = 0; start < updates.length; start += 10) {
-            const batch = updates.slice(start, start + 10);
-            const results = await Promise.all(batch.map((row) => supabase
-                .from('campaign_items')
-                .update({
-                    sku: row.sku,
-                    product_name: row.product_name,
-                    variant_name: row.variant_name,
-                    discount_override: row.discount_override,
-                    added_by: row.added_by,
-                })
-                .eq('id', existingByVariant.get(row.bsale_variant_id)!)));
-            const failed = results.find((result) => result.error);
-            if (failed?.error) throw new Error(failed.error.message);
-        }
-        await supabase.from('campaign_lists').update({ updated_by: null }).eq('id', listId);
-        return { success: true as const, saved: rows.length, insertedVariantIds: inserts.map((row) => row.bsale_variant_id) };
+        const { supabase, organizationId } = await context();
+        const { data, error } = await supabase.rpc('save_campaign_variants', {
+            p_list_id: listId,
+            p_organization_id: organizationId,
+            p_items: rows,
+            p_replace_all: replaceAll,
+        });
+        if (error) throw new Error(error.message);
+        const result = data as unknown as { saved: number; inserted_variant_ids: number[] } | null;
+        if (!result) throw new Error('No pudimos confirmar el guardado de la campaña.');
+        return { success: true as const, saved: result.saved, insertedVariantIds: result.inserted_variant_ids };
     } catch (error) {
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos guardar los productos.' };
     }
@@ -149,19 +116,34 @@ export async function loadCampaignItems(listId: number) {
         const { data: list, error: listError } = await supabase.from('campaign_lists').select('id').eq('id', listId).eq('organization_id', organizationId).maybeSingle();
         if (listError) throw new Error(listError.message);
         if (!list) throw new Error('La lista no existe o no pertenece a tu empresa.');
-        const { data, error } = await supabase.from('campaign_items').select('id, bsale_variant_id, bsale_product_id, sku, product_name, variant_name, discount_override, created_at').eq('campaign_list_id', listId).order('product_name');
-        if (error) throw new Error(error.message);
-        const items: CampaignStoredItem[] = (data ?? []).map((row) => ({
-            id: Number(row.id),
-            variantId: Number(row.bsale_variant_id),
-            productId: Number(row.bsale_product_id),
-            sku: String(row.sku ?? ''),
-            productName: String(row.product_name),
-            variantName: String(row.variant_name ?? ''),
-            discount: Number(row.discount_override ?? 0),
-            createdAt: String(row.created_at),
-        }));
-        return { success: true as const, items };
+        const items: CampaignStoredItem[] = [];
+        const pageSize = 500;
+        let lastId = 0;
+        while (true) {
+            const { data, error } = await supabase.from('campaign_items')
+                .select('id, bsale_variant_id, bsale_product_id, sku, product_name, variant_name, discount_override, created_at')
+                .eq('campaign_list_id', listId)
+                .eq('scope', 'variant')
+                .gt('id', lastId)
+                .order('id')
+                .limit(pageSize);
+            if (error) throw new Error(error.message);
+            for (const row of data ?? []) {
+                lastId = Number(row.id);
+                items.push({
+                    id: lastId,
+                    variantId: Number(row.bsale_variant_id),
+                    productId: Number(row.bsale_product_id),
+                    sku: String(row.sku ?? ''),
+                    productName: String(row.product_name),
+                    variantName: String(row.variant_name ?? ''),
+                    discount: Number(row.discount_override ?? 0),
+                    createdAt: String(row.created_at),
+                });
+            }
+            if (!data?.length) break;
+        }
+        return { success: true as const, items: items.sort((a, b) => a.productName.localeCompare(b.productName, 'es')) };
     } catch (error) {
         return { success: false as const, error: error instanceof Error ? error.message : 'No pudimos cargar los productos.' };
     }
