@@ -83,7 +83,10 @@ export default function PricesPage() {
         setCampaignId(id); setCampaignItems(new Map()); setPriced([]); setSection('home'); setSearch(''); setFamily(''); setDiscountFilter('all'); setCatalogFilter('all'); setSortKey('product'); setSortDirection('asc'); setPage(1); setDirty(false); setMessage(null);
         startTransition(async () => {
             const result = await loadCampaignItems(Number(id));
-            if (!result.success) return setMessage({ error: true, text: result.error });
+            if (!result.success) {
+                setCampaignId('');
+                return setMessage({ error: true, text: result.error });
+            }
             setCampaignItems(new Map(result.items.map((item) => [item.variantId, { ...item, isNew: isRecentlyAdded(item.createdAt) }])));
         });
     }
@@ -195,9 +198,14 @@ export default function PricesPage() {
     function saveDiscounts() {
         const items = priced.map(({ variantId, productId, sku, productName, variantName, discount, createdAt, isNew }) => ({ variantId, productId, sku, productName, variantName, discount, createdAt, isNew }));
         startTransition(async () => {
-            const result = await saveCampaignItems(Number(campaignId), items, true);
+            const result = await saveCampaignItems(Number(campaignId), items);
             if (!result.success) return setMessage({ error: true, text: result.error });
-            setCampaignItems(new Map(items.map((item) => [item.variantId, item]))); setDirty(false); setMessage({ text: 'Descuentos guardados. Puedes volver cuando quieras antes de aplicarlos.' });
+            setCampaignItems((current) => {
+                const updated = new Map(current);
+                for (const item of items) updated.set(item.variantId, item);
+                return updated;
+            });
+            setDirty(false); setMessage({ text: 'Descuentos guardados. Puedes volver cuando quieras antes de aplicarlos.' });
         });
     }
 
